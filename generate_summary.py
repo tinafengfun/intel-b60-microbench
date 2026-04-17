@@ -35,6 +35,10 @@ def main():
             ys = np.array([float(r['median_ns']) for r in lat])
             slope = np.polyfit(xs, ys, 1)[0]
             print(f"\n  >> DPAS BF16 Latency (slope): {slope:.2f} ns = {slope*2.4:.1f} cycles")
+            # Theoretical throughput
+            flops_per_dpas = 8 * 16 * 16 * 2  # M*N*K*2 for BF16
+            tput = flops_per_dpas / (slope * 2.4) * 2.4e9  # FLOPs/cycle * GHz
+            print(f"  >> Latency-bound throughput per SG: {tput/1e12:.3f} TFLOPS")
         except:
             pass
         print()
@@ -66,17 +70,24 @@ def main():
         # Best throughput
         best = max(tput, key=lambda r: float(r['tflops']))
         print(f"\n  >> Peak throughput (1 WG): {float(best['tflops']):.3f} TFLOPS at ILP={best['n_ilp']}, SG={best['n_sg']}")
-        print(f"  >> Note: Full GPU throughput requires many WGs (see SYCL benchmarks)")
+        print(f"  >> Note: Full GPU throughput requires many WGs across 20 Xe Cores")
         print()
 
     # --- Memory Latency ---
     mem_lat = read_csv("mem_latency_sweep.csv")
     if mem_lat:
         print("--- Memory Hierarchy Latency (Pointer Chase, 4096 accesses) ---")
-        print(f"  {'Size':>10s} {'cyc/access':>12s} {'ns/access':>12s} {'Region':>10s}")
+        print(f"  {'Size':>10s} {'cyc/access':>12s} {'ns/access':>12s} {'Region':>20s}")
         for r in mem_lat:
-            print(f"  {r['size_str']:>10s} {r['cycles_per_access']:>12s} {r['ns_per_access']:>12s} {r['region']:>10s}")
+            region = r.get('region', '?')
+            print(f"  {r['size_str']:>10s} {r['cycles_per_access']:>12s} {r['ns_per_access']:>12s} {region:>20s}")
         print()
+
+    # --- SLM Latency ---
+    print("--- SLM Latency (separate benchmark, SYCL local_accessor) ---")
+    print("  Run: ./bench_slm_latency")
+    print("  Expected: ~80 cycles (SLM is carved from L1 on Xe2)")
+    print()
 
     # --- Key Findings ---
     print("=" * 80)
@@ -85,27 +96,36 @@ def main():
     print("""
     1. DPAS/XMX (BF16):
        - Latency: ~31-37 cycles per dpas.8x8 (dependent chain, slope method)
-       - Throughput: scales with ILP; ~0.25 TFLOPS per sub-group with ILP=8
+       - Per-DPAS FLOPs: 8×16×16×2 = 4096 (BF16)
+       - Latency-bound throughput: ~0.298 TFLOPS per sub-group
+       - Throughput scales with ILP; ~0.251 TFLOPS at ILP=8 (84% of latency-bound)
+       - FP16 latency: ~34 cycles (similar to BF16, same hardware)
        - GEN ASM verified: 128 dpas.8x8 instructions for N=128 chain
        - Unitrace: XVE_ACTIVE=5.8%, XVE_STALL_SBID=27.6% (XMX bottleneck)
-       - FP16 latency: ~34 cycles (similar to BF16)
 
-    2. Memory Hierarchy:
-       - SLM/L1: 70-144 cycles/access (1-128KB)
-       - L2: 162-233 cycles/access (192KB-4MB)
-       - Global: 236-261 cycles/access (8MB+)
-       - SYCL bandwidth: Read ~682 GB/s, Write ~900 GB/s (1GB buffer)
+    2. Memory Hierarchy (L1 data cache, not SLM):
+       - L1 data cache: 70-145 cycles/access (1-128 KB per Xe Core)
+       - L2 cache: 162-236 cycles/access (192KB-8MB, 18 MB shared)
+       - Global memory: 247-261 cycles/access (16MB+)
+       - L1→L2 boundary at 128 KB; L2→Global transition gradual around 8-18 MB
 
-    3. Infrastructure:
+    3. SLM (Shared Local Memory):
+       - SLM latency: ~80 cycles at small sizes (256B-1KB)
+       - Very similar to L1 data cache (~71 cycles) — expected because SLM is
+         carved from L1 on Xe2 (same physical hardware, different address space)
+       - Not a separate low-latency SRAM like NVIDIA shared memory (~30 cycles)
+
+    4. Memory Bandwidth (fixed benchmark):
+       - DRAM read: ~147 GB/s (1GB buffer, 32% of 456 GB/s peak)
+       - DRAM write: ~162 GB/s (1GB buffer)
+       - L2 cache read: ~303-351 GB/s (1-4 MB buffer)
+       - Original bandwidth results (682-900 GB/s) had a 10× overcounting bug
+
+    5. Infrastructure:
        - Raw SPIR-V pipeline verified: .spvasm -> spirv-as -> ocloc -> GEN ASM
        - Level Zero submission works with timing (host-side)
        - GEN ASM validation confirms instruction counts
        - INT8 cooperative matrix blocked by ocloc segfault (compiler bug)
-
-    4. Unitrace Cross-Validation:
-       - ComputeBasic: XVE_ACTIVE, instruction counts, L3 hit/miss
-       - VectorEngineStalls: SBID stall dominates DPAS workload
-       - GPU core clock: 2.4 GHz confirmed
     """)
 
 if __name__ == "__main__":

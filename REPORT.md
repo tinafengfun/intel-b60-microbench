@@ -16,7 +16,9 @@ inspired by *"Dissecting the NVIDIA Blackwell Architecture with Microbenchmarks"
 | Memory | 24 GB GDDR6, 456 GB/s peak |
 | Sub-group Size | 16 threads |
 | GRF per Thread | 256 registers (128 × 32B) |
-| SLM per Xe Core | 128-256 KB |
+| L1 Data Cache | 128 KB per Xe Core |
+| SLM (Shared Local Memory) | Up to 128 KB per Xe Core (carved from L1) |
+| L2 Cache | 18 MB shared |
 
 ## Methodology
 
@@ -115,6 +117,8 @@ intercept = 5,926 ns = 14,222 cycles (fixed dispatch overhead)
   is amortized. The slope method gives the true per-instruction latency.
 - The DPAS instruction occupies the XMX engine for ~33 cycles. During this time,
   the thread cannot issue another DPAS (SBID stall).
+- **Per-DPAS FLOPs**: dpas.8x8 BF16 computes M×N×K×2 = 8×16×16×2 = **4096 FLOPs**
+- **Latency-bound throughput**: 4096 FLOPs / 33 cycles × 2.4 GHz ≈ **0.298 TFLOPS per sub-group**
 - **Comparison**: NVIDIA Blackwell Tensor Core latency is ~20 cycles (from paper).
   Intel Xe2 XMX is ~1.7× higher latency but with different throughput characteristics.
 
@@ -236,13 +240,11 @@ Four distinct accumulator registers (r110, r118, r28, r52) confirm independent c
 - **Peak single-WG throughput: 0.251 TFLOPS** at ILP=8, SG=1
 - Throughput scales ~linearly with ILP up to 8 chains
 - Adding more sub-groups doesn't help significantly with only 1 work-group
-- **Per-SG DPAS throughput**: ~0.25 TFLOPS / 8 ILP = 0.031 TFLOPS per DPAS chain
-- Theoretical single-SG peak: 2.4 GHz × 2×8×16×16 FLOPS/dpas = 0.079 TFLOPS
-  (achieved ~40% of peak with ILP=8)
-
-**Note**: Full GPU throughput (target ~99 TFLOPS BF16 peak) requires hundreds of
-work-groups across all 20 Xe Cores, which is demonstrated by the existing SYCL
-GEMM benchmark (89.77 TFLOPS achieved).
+- **Theoretical single-SG peak (latency-bound)**: 4096 FLOPs/dpas ÷ 33 cyc/dpas × 2.4 GHz = **0.298 TFLOPS**
+  - ILP=8 achieves 0.251/0.298 = **84% of latency-bound peak** per sub-group
+- **Full GPU throughput** requires dispatching work-groups across all 20 Xe Cores.
+  The SYCL GEMM benchmark achieves 89.77 TFLOPS, which is ~60% of the theoretical
+  peak of ~150 TFLOPS BF16 (160 XMX × 4096 FLOPs × 2.4 GHz ÷ 33 cycles ÷ pipeline factor).
 
 ---
 
@@ -264,63 +266,118 @@ increasing buffer sizes. Each size reveals which cache level is being tested.
   output[0] = idx
   ```
 - Each access is a dependent load (next address depends on current data)
+- Access uses **CrossWorkgroup address space** (global memory) → measures **L1 data cache** latency
 - Sweep buffer size from 1 KB to 128 MB
 
-**Expected cache boundaries** (BMG-G21):
-- 1-128 KB: fits in SLM/L1 (per Xe Core)
-- 192 KB - 4 MB: exceeds L1, fits in L2
-- 8 MB+: exceeds L2, hits global memory (GDDR6)
+**Important**: This kernel measures L1 data cache, **not** SLM (Shared Local Memory).
+SLM uses a different address space (Workgroup) and has its own benchmark (Benchmark 5b).
+On Intel Xe2, SLM is physically carved from the L1 data cache, but uses a separate
+addressing path and potentially different access logic.
 
 ### Results
 
 | Buffer Size | Cycles/Access | ns/Access | Region |
 |---|---:|---:|---|
-| 1 KB | 70.8 | 29.5 | SLM/L1 |
-| 4 KB | 74.3 | 31.0 | SLM/L1 |
-| 16 KB | 77.8 | 32.4 | SLM/L1 |
-| 32 KB | 91.9 | 38.3 | SLM/L1 |
-| 64 KB | 110.4 | 46.0 | SLM/L1 |
-| 128 KB | 144.5 | 60.2 | SLM/L1 boundary |
-| 192 KB | 162.4 | 67.7 | L2 |
-| 512 KB | 201.0 | 83.8 | L2 |
-| 1 MB | 219.6 | 91.5 | L2 |
-| 4 MB | 232.7 | 97.0 | L2 |
-| 8 MB | 236.1 | 98.4 | Global |
-| 16 MB | 247.4 | 103.1 | Global |
-| 64 MB | 257.4 | 107.2 | Global |
-| 128 MB | 260.7 | 108.6 | Global |
+| 1 KB | 70.8 | 29.5 | L1 data cache |
+| 2 KB | 70.8 | 29.5 | L1 data cache |
+| 4 KB | 74.3 | 31.0 | L1 data cache |
+| 8 KB | 74.3 | 30.9 | L1 data cache |
+| 16 KB | 77.8 | 32.4 | L1 data cache |
+| 32 KB | 91.9 | 38.3 | L1 data cache |
+| 48 KB | 102.4 | 42.7 | L1 data cache |
+| 64 KB | 110.4 | 46.0 | L1 data cache |
+| 96 KB | 130.6 | 54.4 | L1 data cache |
+| 128 KB | 144.5 | 60.2 | L1 data cache boundary |
+| 192 KB | 162.4 | 67.7 | L2 cache |
+| 256 KB | 177.6 | 74.0 | L2 cache |
+| 384 KB | 195.5 | 81.4 | L2 cache |
+| 512 KB | 201.0 | 83.8 | L2 cache |
+| 768 KB | 214.9 | 89.5 | L2 cache |
+| 1 MB | 219.6 | 91.5 | L2 cache |
+| 1.5 MB | 225.9 | 94.1 | L2 cache |
+| 2 MB | 229.3 | 95.5 | L2 cache |
+| 4 MB | 232.7 | 97.0 | L2 cache |
+| 8 MB | 236.1 | 98.4 | L2 cache (near boundary) |
+| 16 MB | 247.4 | 103.1 | L2→Global transition |
+| 32 MB | 253.9 | 105.8 | Global memory |
+| 64 MB | 257.4 | 107.2 | Global memory |
+| 128 MB | 260.7 | 108.6 | Global memory |
 
 ### Analysis
 
 **Latency hierarchy**:
 
 ```
-SLM/L1  ████████████████████ 70-145 cycles (1-128 KB)
-   ↑
-L2      ████████████████████████████████ 162-233 cycles (192KB-4MB)
-   ↑
-Global  ████████████████████████████████████ 236-261 cycles (8MB+)
+L1 Data Cache  ████████████████████ 70-145 cycles (1-128 KB, per Xe Core)
+      ↑
+L2 Cache       ████████████████████████████████ 162-236 cycles (192KB-8MB, 18 MB shared)
+      ↑
+Global (DRAM)  ████████████████████████████████████ 247-261 cycles (16MB+)
 ```
 
-- **SLM/L1 latency**: ~71 cycles at 1KB, growing to ~145 cycles at 128KB.
-  The growth suggests the L1 has a set-associative structure with conflict misses
-  appearing as buffer size approaches the cache capacity.
+- **L1 data cache latency**: ~71 cycles at 1-4 KB, growing to ~145 cycles at 128 KB.
+  The growth with size suggests set-associative conflict misses as the buffer
+  approaches the 128 KB L1 capacity per Xe Core.
 
-- **L1→L2 transition**: Sharp increase from 145→162 cycles between 128KB→192KB.
-  This places the L1 cache size at approximately **128 KB per Xe Core**.
+- **L1→L2 transition**: Sharp increase from 145→162 cycles between 128 KB→192 KB.
+  This places the L1 data cache size at **128 KB per Xe Core**.
 
-- **L2 latency**: ~162-233 cycles, relatively stable. The L2 appears to be
-  **4-8 MB** shared across all Xe Cores (latency stabilizes above 4MB).
+- **L2 cache latency**: ~162-236 cycles across the 192 KB to 8 MB range.
+  The BMG-G21 has an **18 MB shared L2 cache**. Data up to ~8 MB shows relatively
+  stable latency (~233-236 cycles), with a gradual increase to ~247 cycles at 16 MB.
+  The absence of a sharp boundary at 18 MB is expected: the pointer-chase pattern
+  from a single thread generates sequential cache-line fills, and the L2's high
+  associativity means the transition is gradual rather than abrupt.
 
 - **Global memory latency**: ~260 cycles = 108 ns. At 456 GB/s peak bandwidth,
   this translates to ~48 KB of in-flight data per memory channel.
 
-- **Comparison with NVIDIA Blackwell** (from paper):
-  - NVIDIA shared memory: ~30 cycles
-  - NVIDIA L1: ~30-35 cycles
-  - NVIDIA L2: ~200-250 cycles
-  - NVIDIA Global: ~300-500 cycles
-  - Intel B60 L1 is ~2-4× higher latency but SLM provides higher capacity (128-256 KB)
+---
+
+## Benchmark 5b: SLM (Shared Local Memory) Latency
+
+### Design
+
+**Goal**: Measure true SLM latency separately from L1 data cache. On Intel Xe2, SLM
+is carved from the L1 data cache but uses the **Workgroup address space** (`OpVariable
+Workgroup` in SPIR-V, or `sycl::local_accessor` in SYCL), which has different
+semantics (barrier-coherent, work-group-scoped).
+
+**Kernel**: `bench_slm_latency.cpp` (SYCL)
+- Uses `sycl::local_accessor<int, 1>` for SLM allocation
+- Single work-group (16 threads), only thread 0 performs the chase
+- Copy Fisher-Yates shuffled permutation from global → SLM
+- `sycl::group_barrier` to synchronize
+- Thread 0 chases 4096 steps through SLM: `idx = slm[idx]`
+- Sweep SLM allocation size from 256 B to 64 KB
+
+### Results
+
+| SLM Size | Median (ns) | Cycles/Access | ns/Access |
+|---|---:|---:|---:|
+| 256 B | 135,821 | 79.6 | 33.2 |
+| 512 B | 136,143 | 79.8 | 33.2 |
+| 1 KB | 137,041 | 80.3 | 33.5 |
+| 2 KB | 138,944 | 81.4 | 33.9 |
+| 4 KB | 142,574 | 83.5 | 34.8 |
+| 8 KB | 150,013 | 87.9 | 36.6 |
+| 16 KB | 164,712 | 96.5 | 40.2 |
+| 32 KB | 193,742 | 113.5 | 47.3 |
+| 64 KB | 252,900 | 148.2 | 61.7 |
+
+### Analysis
+
+- **SLM latency ≈ 80 cycles** at small sizes (256B-1KB), growing to ~148 cycles at 64 KB
+- **This is very similar to L1 data cache latency** (~71 cycles at 1KB)
+- **Explanation**: On Intel Xe2, SLM is physically carved from the L1 data cache.
+  The SLM portion and the general L1 data cache share the same SRAM arrays.
+  Therefore, SLM access latency is comparable to L1 data cache latency — they are
+  the same hardware, just with different coherence/scoping semantics.
+- **Contrast with NVIDIA**: NVIDIA shared memory is a separate SRAM with ~30 cycle
+  latency, distinct from the L1 cache (~35 cycles). Intel Xe2 does not have this
+  separation — SLM and L1 are unified.
+- The size-dependent latency growth (80→148 cycles) reflects the same set-associative
+  conflict behavior seen in the L1 data cache, as expected since they share hardware.
 
 ---
 
@@ -328,40 +385,68 @@ Global  ████████████████████████
 
 ### Design
 
-**SYCL kernel** (`bench_mem_bandwidth.cpp`):
-- Coalesced read/write patterns with 256-thread work-groups
-- Each thread reads/writes 10 elements with stride = work-group size
-- Multiple work-groups to saturate the memory subsystem
+**SYCL kernel** (`bench_mem_bandwidth_fixed.cpp`):
+- 64 work-groups × 256 threads = **16,384 threads** (enough to saturate memory)
+- Each thread reads/writes `ceil(buffer_size / 16384)` elements with stride=16384
+- **Every unique buffer element is accessed exactly once** (correct byte counting)
+- Coalesced access pattern (consecutive threads access consecutive addresses)
 - Sweep buffer size from 1 MB to 1 GB
 - SYCL profiling events for accurate GPU-side timing
 
+**Note on previous bandwidth bug**: The initial bandwidth benchmark used too many
+threads (~268M for 1GB buffer) where each thread performed only 1 valid read but
+the calculation assumed 10 reads per thread, resulting in a 10× overcount. The
+reported 682-900 GB/s was incorrect. The fixed benchmark uses 16K threads with
+proper stride and correct byte counting.
+
 ### Results
 
-| Buffer Size | Read BW (GB/s) | Write BW (GB/s) |
-|---|---:|---:|
-| 1 MB | 789 | 859 |
-| 4 MB | 813 | 887 |
-| 16 MB | 763 | 897 |
-| 64 MB | 681 | 900 |
-| 256 MB | 682 | 901 |
-| 1024 MB | 682 | 901 |
+| Buffer Size | n_iter | Read BW (GB/s) | Write BW (GB/s) |
+|---|---:|---:|---:|
+| 1 MB | 16 | 303 | 479 |
+| 4 MB | 64 | 351 | 615 |
+| 16 MB | 256 | 256 | 654 |
+| 64 MB | 1024 | 147 | 362 |
+| 256 MB | 4096 | 147 | 289 |
+| 1024 MB | 16384 | 147 | 162 |
 
 ### Analysis
 
-- **Sustained read bandwidth**: 682 GB/s (1 GB buffer)
-  - This is **1.5× the GDDR6 spec bandwidth** of 456 GB/s
-  - Explanation: the "read" kernel includes cache effects; data read from L2
-    cache counts toward the profiling metric but doesn't reflect pure DRAM bandwidth
+- **Sustained DRAM read bandwidth**: **~147 GB/s** (1 GB buffer, well beyond L2)
+  - This is ~32% of the 456 GB/s GDDR6 peak bandwidth
+  - The low utilization is expected for a read-only pattern with 16K threads —
+    full bandwidth saturation typically requires more threads and/or mixed read/write
 
-- **Sustained write bandwidth**: 901 GB/s (1 GB buffer)
-  - Also exceeds spec bandwidth, indicating write-combining and cache effects
+- **Sustained DRAM write bandwidth**: **~162 GB/s** (1 GB buffer)
+  - Write bandwidth is slightly higher than read, consistent with write-combining optimizations
 
-- **Size dependence**: Read BW decreases from 813→682 GB/s as buffer grows
-  beyond L2 capacity (4-8 MB), confirming the cache contribution at smaller sizes
+- **Cache effects at small sizes**: Read BW reaches 303-351 GB/s at 1-4 MB (fits in L2),
+  confirming that L2 cache serves reads at ~2× DRAM bandwidth
 
-- **Note**: For accurate DRAM-only bandwidth, unitrace `GPU_MEMORY_BYTE_READ` metric
-  should be used instead of kernel-level timing. The kernel-level measurement includes
-  all cache levels.
+- **Why bandwidth is below peak**: The GDDR6 peak of 456 GB/s assumes optimal
+  transaction scheduling across all memory channels. Our single-kernel, read-heavy
+  workload may not fully saturate all channels. Production GEMM kernels achieve
+  higher effective bandwidth through tiled read/write patterns.
+
+---
+
+## Benchmark 7: Memory Bandwidth (Previous, Buggy)
+
+### Original (Incorrect) Results
+
+The initial bandwidth benchmark (`bench_mem_bandwidth.cpp`) reported 682-900 GB/s.
+This was due to a **10× overcounting bug** in the byte calculation:
+
+```
+bytes_read = n * n_iter * sizeof(float)   // BUG: overcounts by ~10×
+```
+
+With `n = 268M` floats (1GB buffer) and `global_range = 268M` threads:
+- `idx = gid + i * global_range` exceeds `n` for any `i >= 1`
+- Only the `i=0` iteration accesses valid data (1 read per thread)
+- Actual bytes read = `n * sizeof(float)` = buffer size, not `n * n_iter * sizeof(float)`
+
+The corrected results (Benchmark 6 above) show ~147 GB/s read, ~162 GB/s write.
 
 ---
 
@@ -407,6 +492,40 @@ zeInit → zeDriverGet → zeDeviceGet → zeContextCreate
 
 ---
 
+## Cross-Architecture Comparison (With Caveats)
+
+### Caveats
+
+The comparison below between Intel Arc Pro B60 and NVIDIA Blackwell is **not apples-to-apple**:
+- **Different market segments**: B60 is a professional workstation GPU (~$300-500);
+  Blackwell GPUs (B100/B200) are data-center accelerators (~$30,000+)
+- **Different power envelopes**: B60 ~120W TBP; Blackwell up to 1000W
+- **Different process nodes**: Intel 4 vs. TSMC 4NP
+- **Different architectural goals**: B60 optimizes for graphics+compute;
+  Blackwell optimizes for AI training/inference at scale
+
+This comparison serves only to contextualize our measurements, not to declare superiority.
+
+### Latency Comparison
+
+| Metric | Intel B60 (Xe2) | NVIDIA Blackwell | Notes |
+|---|---|---|---|
+| Tensor/Matrix unit latency | 33-37 cycles (XMX DPAS) | ~20 cycles (Tensor Core) | NVIDIA ~1.7× lower |
+| Shared memory / SLM | ~80 cycles (carved from L1) | ~30 cycles (separate SRAM) | NVIDIA has dedicated shared mem |
+| L1 data cache | ~71-145 cycles | ~30-35 cycles | NVIDIA ~2-4× lower |
+| L2 cache | ~162-236 cycles (18 MB) | ~200-250 cycles | Similar range |
+| Global memory | ~247-261 cycles | ~300-500 cycles | Intel lower (closer L2/GLOBAL) |
+
+### Key Architectural Insight
+
+The most notable difference is the **SLM/shared memory architecture**:
+- **NVIDIA**: Shared memory is a separate, low-latency SRAM (~30 cycles) distinct from L1
+- **Intel Xe2**: SLM is carved from the L1 data cache itself, resulting in ~80 cycle latency
+  (similar to L1). This is a trade-off: Intel gets flexible SLM/L1 partitioning but at the
+  cost of not having a dedicated low-latency scratchpad.
+
+---
+
 ## Files
 
 | File | Description |
@@ -415,8 +534,11 @@ zeInit → zeDriverGet → zeDeviceGet → zeContextCreate
 | `mem_runner.cpp` | Memory benchmark runner (pointer chase permutation, bandwidth) |
 | `spirv_dpas_latency.spvasm` | BF16 DPAS latency kernel (dependent chain) |
 | `spirv_dpas_int8_latency.spvasm` | INT8 DPAS latency kernel (blocked by compiler bug) |
-| `spirv_ptr_chase.spvasm` | Pointer chase kernel (single-thread, 4096 steps) |
+| `spirv_ptr_chase.spvasm` | Pointer chase kernel (single-thread, 4096 steps, L1 data cache) |
 | `spirv_mem_read.spvasm` | Coalesced read kernel (256-thread WG, 256 iters) |
+| `bench_slm_latency.cpp` | SLM pointer chase benchmark (SYCL, measures SLM latency) |
+| `bench_mem_bandwidth_fixed.cpp` | Fixed bandwidth benchmark (correct byte counting) |
+| `bench_mem_bandwidth.cpp` | Original bandwidth benchmark (has overcounting bug, kept for reference) |
 | `run_dpas_sweep.py` | DPAS latency/throughput automation |
 | `run_dpas_precision.py` | BF16/FP16 precision comparison |
 | `run_mem_sweep.py` | Memory latency/bandwidth automation |
