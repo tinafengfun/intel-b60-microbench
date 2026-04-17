@@ -1,0 +1,18 @@
+# Build artifacts
+*.spv
+*_bmg.bin
+spirv_runner
+mem_runner
+bench_*
+!bench_*.cpp
+*_disasm/
+disasm_*/
+sweep_*
+__pycache__/
+test_intrinsics
+
+# SPIR-V dump (large)
+spirv_dump/
+
+# OS
+.DS_Store

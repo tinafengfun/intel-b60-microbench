@@ -1,0 +1,91 @@
+; SPIR-V 1.4
+; DPAS INT8 Latency: N dependent CooperativeMatrixMulAddKHR operations
+; INT8 8x32x16 tile (A: 8x32 uchar, B: 32x16 uchar, C: 8x16 float)
+; All operands loaded from global memory to prevent IGC constant folding
+
+               OpCapability Addresses
+               OpCapability Kernel
+               OpCapability Int64
+               OpCapability Int8
+               OpCapability Int16
+               OpCapability CooperativeMatrixKHR
+               OpExtension "SPV_KHR_cooperative_matrix"
+          %1 = OpExtInstImport "OpenCL.std"
+               OpMemoryModel Physical64 OpenCL
+               OpEntryPoint Kernel %main "dpas_latency"
+               OpExecutionMode %main SubgroupSize 16
+
+; ---- Types ----
+     %void   = OpTypeVoid
+     %bool   = OpTypeBool
+     %uint   = OpTypeInt 32 0
+     %int    = OpTypeInt 32 1
+     %ulong  = OpTypeInt 64 0
+     %float  = OpTypeFloat 32
+     %uchar  = OpTypeInt 8 0
+     %ushort = OpTypeInt 16 0
+
+; ---- Constants ----
+   %uint_0   = OpConstant %uint 0
+   %uint_1   = OpConstant %uint 1
+   %uint_2   = OpConstant %uint 2
+   %uint_3   = OpConstant %uint 3
+   %uint_8   = OpConstant %uint 8
+  %uint_16   = OpConstant %uint 16
+  %uint_32   = OpConstant %uint 32
+  %uint_64   = OpConstant %uint 64
+  %ulong_0   = OpConstant %ulong 0
+
+; ---- Pointer types ----
+%ptr_cross_uchar = OpTypePointer CrossWorkgroup %uchar
+%ptr_cross_float  = OpTypePointer CrossWorkgroup %float
+
+; ---- Cooperative Matrix Types (INT8 8x32x16) ----
+; Accumulator: float, scope=subgroup(3), 8 rows, 16 cols, use=accumulator(2)
+  %cm_acc = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_8 %uint_16 %uint_2
+; A matrix: uchar, scope=subgroup(3), 8 rows, 32 cols, use=a(0)
+  %cm_a   = OpTypeCooperativeMatrixKHR %uchar %uint_3 %uint_8 %uint_32 %uint_0
+; B matrix: uchar, scope=subgroup(3), 32 rows, 16 cols, use=b(1)
+  %cm_b   = OpTypeCooperativeMatrixKHR %uchar %uint_3 %uint_32 %uint_16 %uint_1
+
+; ---- Function: (buf_a, buf_b, buf_c) -> void ----
+  %fn_type = OpTypeFunction %void %ptr_cross_uchar %ptr_cross_uchar %ptr_cross_float
+
+  %main = OpFunction %void None %fn_type
+  %buf_a = OpFunctionParameter %ptr_cross_uchar
+  %buf_b = OpFunctionParameter %ptr_cross_uchar
+  %buf_c = OpFunctionParameter %ptr_cross_float
+
+; ---- Entry ----
+  %entry = OpLabel
+
+  ; Load A tile: 8x32 INT8, RowMajor, stride=32
+   %a_tile = OpCooperativeMatrixLoadKHR %cm_a %buf_a %uint_0 %uint_32 None
+
+  ; Load B tile: 32x16 INT8, RowMajor, stride=16
+   %b_tile = OpCooperativeMatrixLoadKHR %cm_b %buf_b %uint_0 %uint_16 None
+
+  ; Load initial accumulator from buf_c: 8x16 float, RowMajor, stride=16
+  %acc_init = OpCooperativeMatrixLoadKHR %cm_acc %buf_c %uint_0 %uint_16 None
+
+               OpBranch %loop_header
+
+; ---- Loop header (N=64 dependent MulAdd) ----
+%loop_header = OpLabel
+               OpLoopMerge %loop_exit %loop_header None
+  %acc_phi = OpPhi %cm_acc %acc_init %entry %acc_next %loop_body
+    %i_phi = OpPhi %uint %uint_0 %entry %i_next %loop_body
+      %cond = OpULessThan %bool %i_phi %uint_64
+               OpBranchConditional %cond %loop_body %loop_exit
+
+; ---- Loop body ----
+%loop_body = OpLabel
+  %acc_next = OpCooperativeMatrixMulAddKHR %cm_acc %a_tile %b_tile %acc_phi
+    %i_next = OpIAdd %uint %i_phi %uint_1
+               OpBranch %loop_header
+
+; ---- Exit: store result ----
+%loop_exit = OpLabel
+               OpCooperativeMatrixStoreKHR %buf_c %acc_phi %uint_0 %uint_16 None
+               OpReturn
+               OpFunctionEnd

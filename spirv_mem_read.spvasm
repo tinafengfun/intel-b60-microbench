@@ -1,0 +1,66 @@
+; SPIR-V 1.4
+; Coalesced Read: Each thread sums 256 elements with stride=wg_size(256)
+; 256 WGs * 256 threads * 256 iters * 4B = 64MB read
+; Args: buf (float input), out (float output)
+
+               OpCapability Addresses
+               OpCapability Kernel
+               OpCapability Int64
+          %1 = OpExtInstImport "OpenCL.std"
+               OpMemoryModel Physical64 OpenCL
+               OpEntryPoint Kernel %main "mem_read"
+               OpExecutionMode %main LocalSize 256 1 1
+
+     %void = OpTypeVoid
+     %bool = OpTypeBool
+     %uint = OpTypeInt 32 0
+    %ulong = OpTypeInt 64 0
+     %float = OpTypeFloat 32
+   %v3ulong = OpTypeVector %ulong 3
+%ptr_cross_float = OpTypePointer CrossWorkgroup %float
+%ptr_input_v3ulong = OpTypePointer Input %v3ulong
+
+   %uint_0 = OpConstant %uint 0
+   %uint_1 = OpConstant %uint 1
+  %uint_256 = OpConstant %uint 256
+ %ulong_0 = OpConstant %ulong 0
+%ulong_256 = OpConstant %ulong 256
+ %float_0 = OpConstant %float 0
+
+               OpDecorate %__spirv_BuiltInGlobalInvocationId LinkageAttributes "__spirv_BuiltInGlobalInvocationId" Import
+               OpDecorate %__spirv_BuiltInGlobalInvocationId BuiltIn GlobalInvocationId
+
+%__spirv_BuiltInGlobalInvocationId = OpVariable %ptr_input_v3ulong Input
+
+  %fn_type = OpTypeFunction %void %ptr_cross_float %ptr_cross_float
+
+  %main = OpFunction %void None %fn_type
+    %buf = OpFunctionParameter %ptr_cross_float
+    %out = OpFunctionParameter %ptr_cross_float
+
+  %entry = OpLabel
+  %gid_vec = OpLoad %v3ulong %__spirv_BuiltInGlobalInvocationId
+    %gid_x = OpCompositeExtract %ulong %gid_vec 0
+               OpBranch %loop_header
+
+%loop_header = OpLabel
+               OpLoopMerge %loop_exit %loop_header None
+   %sum_phi = OpPhi %float %float_0 %entry %sum_next %loop_body
+     %i_phi = OpPhi %uint %uint_0 %entry %i_next %loop_body
+      %cond = OpULessThan %bool %i_phi %uint_256
+               OpBranchConditional %cond %loop_body %loop_exit
+
+%loop_body = OpLabel
+  %i_ulong = OpUConvert %ulong %i_phi
+  %stride = OpIMul %ulong %i_ulong %ulong_256
+     %idx = OpIAdd %ulong %gid_x %stride
+     %ptr = OpPtrAccessChain %ptr_cross_float %buf %idx
+      %val = OpLoad %float %ptr Aligned 4
+ %sum_next = OpFAdd %float %sum_phi %val
+   %i_next = OpIAdd %uint %i_phi %uint_1
+               OpBranch %loop_header
+
+%loop_exit = OpLabel
+               OpStore %out %sum_phi Aligned 4
+               OpReturn
+               OpFunctionEnd

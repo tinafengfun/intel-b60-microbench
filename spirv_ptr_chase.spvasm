@@ -1,0 +1,47 @@
+; SPIR-V 1.4
+; Pointer Chase: Single-thread sequential memory access latency
+; Args: buf (int32 array with permutation), out (int32 result)
+; CHASE=4096 accesses, measure total time from host
+
+               OpCapability Addresses
+               OpCapability Kernel
+               OpCapability Int64
+          %1 = OpExtInstImport "OpenCL.std"
+               OpMemoryModel Physical64 OpenCL
+               OpEntryPoint Kernel %main "ptr_chase"
+               OpExecutionMode %main LocalSize 1 1 1
+
+     %void = OpTypeVoid
+     %bool = OpTypeBool
+     %uint = OpTypeInt 32 0
+    %ulong = OpTypeInt 64 0
+   %uint_0 = OpConstant %uint 0
+   %uint_1 = OpConstant %uint 1
+  %uint_4096 = OpConstant %uint 4096
+%ptr_cross_uint = OpTypePointer CrossWorkgroup %uint
+  %fn_type = OpTypeFunction %void %ptr_cross_uint %ptr_cross_uint
+
+  %main = OpFunction %void None %fn_type
+    %buf = OpFunctionParameter %ptr_cross_uint
+    %out = OpFunctionParameter %ptr_cross_uint
+
+  %entry = OpLabel
+               OpBranch %loop_header
+
+%loop_header = OpLabel
+               OpLoopMerge %loop_exit %loop_header None
+    %idx_phi = OpPhi %uint %uint_0 %entry %idx_next %loop_body
+      %i_phi = OpPhi %uint %uint_0 %entry %i_next %loop_body
+       %cond = OpULessThan %bool %i_phi %uint_4096
+               OpBranchConditional %cond %loop_body %loop_exit
+
+%loop_body = OpLabel
+      %ptr = OpPtrAccessChain %ptr_cross_uint %buf %idx_phi
+  %idx_next = OpLoad %uint %ptr Aligned 4
+    %i_next = OpIAdd %uint %i_phi %uint_1
+               OpBranch %loop_header
+
+%loop_exit = OpLabel
+               OpStore %out %idx_phi Aligned 4
+               OpReturn
+               OpFunctionEnd

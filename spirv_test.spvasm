@@ -1,0 +1,36 @@
+; SPIR-V 1.4  
+; Minimal test: 4 dependent FMA operations
+; For Intel GPU compute: use OpenCL memory model
+             OpCapability Shader
+        %1 = OpExtInstImport "OpenCL.std"
+             OpMemoryModel Physical64 OpenCL
+             OpEntryPoint Kernel %main "test_fma"
+             OpExecutionMode %main LocalSize 16 1 1
+
+     %void = OpTypeVoid
+    %float = OpTypeFloat 32
+     %uint = OpTypeInt 32 0
+      %int = OpTypeInt 32 1
+    %int_0 = OpConstant %int 0
+  %float_1 = OpConstant %float 1.001
+  %float_a = OpConstant %float 1.0
+     %ulong = OpTypeInt 64 0
+  %ulong_0 = OpConstant %ulong 0
+ %ptr_float = OpTypePointer CrossWorkgroup %float
+  %voidfn = OpTypeFunction %void %ptr_float
+
+     %main = OpFunction %void None %voidfn
+    %output = OpFunctionParameter %ptr_float
+   %entry = OpLabel
+     %x = OpCopyObject %float %float_1
+     %m1 = OpFMul %float %x %x
+     %a1 = OpFAdd %float %m1 %float_a
+     %m2 = OpFMul %float %a1 %a1
+     %a2 = OpFAdd %float %m2 %float_a
+     %m3 = OpFMul %float %a2 %a2
+     %a3 = OpFAdd %float %m3 %float_a
+     %m4 = OpFMul %float %a3 %a3
+     %a4 = OpFAdd %float %m4 %float_a
+             OpStore %output %a4 Aligned 4
+             OpReturn
+             OpFunctionEnd

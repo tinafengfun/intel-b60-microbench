@@ -1,0 +1,20 @@
+
+=== Device Timing Summary ===
+
+                Total Execution Time (ns):          11620364183
+    Total Device Time for L0 backend (ns):             86951898
+
+== L0 Backend ==
+
+                                                                                                           Kernel,        Calls,            Time (ns),     Time (%),         Average (ns),             Min (ns),             Max (ns)
+"main::{lambda(sycl::_V1::handler&)#2}::operator()(sycl::_V1::handler&) const::{lambda(sycl::_V1::nd_item<1>)#1}",         2730,             43533697,    50.066414,                15946,                 2291,                91145
+"main::{lambda(sycl::_V1::handler&)#1}::operator()(sycl::_V1::handler&) const::{lambda(sycl::_V1::nd_item<1>)#1}",         2730,             43418201,    49.933586,                15904,                 2187,                91041
+
+
+=== Kernel Properties ===
+
+                                                                                                           Kernel, Compiled, SIMD, Number of Arguments, SLM Per Work Group, Private Memory Per Thread, Spill Memory Per Thread, Register File Size Per Thread
+"main::{lambda(sycl::_V1::handler&)#2}::operator()(sycl::_V1::handler&) const::{lambda(sycl::_V1::nd_item<1>)#1}",      AOT,   16,                   3,                  0,                         0,                       0,                       unknown
+"main::{lambda(sycl::_V1::handler&)#1}::operator()(sycl::_V1::handler&) const::{lambda(sycl::_V1::nd_item<1>)#1}",      AOT,   16,                   3,                  0,                         0,                       0,                       unknown
+
+
