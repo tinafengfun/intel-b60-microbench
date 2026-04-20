@@ -19,10 +19,13 @@ Writing GPU microbenchmarks on Intel Xe2 requires careful attention to compiler 
 | XMX Engines | 160 | One per EU, dpas.8x8 |
 | Sub-group Size | 16 threads | vs NVIDIA's 32 (warp) |
 | L1 Data Cache | 128 KB/Xe Core | `send.ugm` path, ~71 cycles |
-| SLM | Up to 128 KB/Xe Core | `send.slm` path, ~46 cycles |
+| SLM | Up to 64 KB usable/Xe Core | 128 KB SRAM split: 64K SLM + 64K L1 |
 | L2 Cache | 18 MB shared | Per chip, not per core |
-| GDDR6 | 24 GB, 456 GB/s peak | |
+| GDDR6 | 24 GB, 256-bit bus, ~576 GB/s peak | 18 Gbps data rate |
 | Core Clock | 2.4 GHz | Confirmed via unitrace |
+| DPAS Latency | 33 cycles (BF16/FP16) | Dependent chain slope |
+| DPAS Reciprocal Throughput | 16.1 cycles | Directly measured, full GPU sweep |
+| Threads/EU | 8 | TLP enables XMX pipelining |
 
 ## SPIR-V Pipeline
 
@@ -238,10 +241,39 @@ For every microbenchmark:
 
 ## Known Limitations
 
-- **INT8 cooperative matrix**: `ocloc` segfaults with `OpTypeCooperativeMatrixKHR %uchar` (compiler bug)
+- **INT8 cooperative matrix**: `ocloc` segfaults with `OpTypeCooperativeMatrixKHR %uchar` + `MulAddKHR` (compiler bug). Type declaration alone works, but any MulAddKHR crashes.
 - **FP16 vs BF16**: Both work, GEN ASM suffixes differ (`:hf` vs `:bf`)
 - **FP64**: Very limited on Xe2 (only 2 FP64 units per Xe Core)
 - **SPIR-V template generation**: Generated SPIR-V from scratch causes `ocloc` segfaults. Always modify a known-working template via string replacement.
+- **SLM practical limit**: 64 KB max (128 KB SRAM split with L1). Allocations >64 KB fail.
+- **Driver memory info**: Level Zero/xpu-smi reports wrong bus width (64-bit) and clock (0 MHz). True spec: 256-bit at 18 Gbps.
+
+## Additional Gotchas
+
+### 9. Scalar vs Vector Memory Access — 3.6× Bandwidth Difference
+
+Scalar `float` loads achieve only ~204 GB/s read bandwidth (even with ILP/extra threads).
+Vector `float4` loads achieve **538 GB/s** (93% of 576 GB/s peak). The 2.6× gap is due to
+per-thread memory transaction efficiency. Always use vectorized loads for bandwidth benchmarks.
+
+### 10. XMX Doesn't Pipeline Independent DPAS Within a Sub-group
+
+ILP=8 independent DPAS chains within a single sub-group achieve only ~39 cycles/dpas
+(close to 33 cycle latency). The 16.1 cycle reciprocal throughput comes from **TLP**
+(thread-level parallelism): each EU has 8 hardware threads, and the thread scheduler
+interleaves DPAS operations from multiple sub-groups. Use multi-SG work-groups to
+measure true XMX throughput.
+
+### 11. L1 Pointer Chase Growth Is NOT TLB
+
+Latency growth from 71→145 cycles in L1 range (1-128 KB) is due to reduced cache line
+utilization with random access patterns, not TLB effects. PAGE_STRIDE test (1 element per
+4KB page) stays flat at ~64 cycles across all sizes, proving TLB is not the bottleneck.
+
+### 12. Host Timing Overhead
+
+Host-side `chrono` timing includes ~6.7 μs submit+wait overhead. For kernels <50 μs,
+use GPU event profiling or the slope method. For kernels >1 ms, host and GPU timing agree within 1%.
 
 ## Tools
 

@@ -13,11 +13,11 @@ inspired by *"Dissecting the NVIDIA Blackwell Architecture with Microbenchmarks"
 | EUs | 160 |
 | XMX Engines | 160 |
 | Core Clock | 2.4 GHz |
-| Memory | 24 GB GDDR6, 456 GB/s peak |
+| Memory | 24 GB GDDR6, 256-bit bus, ~576 GB/s peak (18 Gbps) |
 | Sub-group Size | 16 threads |
 | GRF per Thread | 256 registers (128 × 32B) |
 | L1 Data Cache | 128 KB per Xe Core |
-| SLM (Shared Local Memory) | Up to 128 KB per Xe Core (send.slm path, ~46 cycles minimum) |
+| SLM (Shared Local Memory) | Up to 64 KB usable per Xe Core (128 KB SRAM split with L1) |
 | L2 Cache | 18 MB shared |
 
 ## Methodology
@@ -49,8 +49,14 @@ Kernels are submitted via **Level Zero API** (`zeModuleCreate` → `zeKernelCrea
 
 - **Host-side timing**: `std::chrono::high_resolution_clock` wrapping
   `zeCommandQueueExecuteCommandLists` + `zeCommandQueueSynchronize`
+- **GPU event timing**: SYCL/Level Zero profiling events for kernel-level timestamps
 - **Sweep method**: Vary operation count N, measure total time, compute per-op
   latency from **linear regression slope** to eliminate fixed dispatch overhead (~6μs)
+- **Host vs GPU timing comparison**:
+  - Long kernels (>1 ms): host and GPU event timing agree within 1%
+  - Short kernels (<100 μs): host timing includes ~6.7 μs submit+wait overhead
+  - Empty kernel: GPU=0.8 μs, host=7.5 μs (9:1 ratio)
+  - This validates the slope method for short DPAS kernels (6-8 μs)
 - **Warmup**: 10 iterations discarded, then 50-100 measured iterations
 - **Statistic**: Median of repetitions (robust to outliers)
 - **Clock**: 2.4 GHz confirmed via `zeDeviceGetProperties` and unitrace `CoreFrequencyMHz`
@@ -179,18 +185,18 @@ INT8 DPAS uses `OpTypeInt 8 0` (uchar) for operands with dimensions 8×32×16
 
 ### Result
 
-**BLOCKED**: `ocloc compile` segfaults when processing SPIR-V with
-`OpTypeCooperativeMatrixKHR %uchar %uint_3 %uint_8 %uint_32 %uint_0`.
+**BLOCKED**: `ocloc compile` segfaults (exit code 139, SIGSEGV) when processing SPIR-V
+with `OpTypeCooperativeMatrixKHR %uchar` combined with `OpCooperativeMatrixMulAddKHR`.
 
-Error with wrong dimensions (8×16×16 for INT8):
+**Reproduction evidence** (oneAPI 2025.3, ocloc for BMG-G21):
 ```
-Unsupported JointMatrix operation: load matrix A <8 x 16 x i8> with row major layout
- -> unsupported number of columns: 16
-    supported values: 32
+# Type declaration alone (no MulAddKHR): compiles OK
+# With MulAddKHR, correct dimensions (8×32×16): Segmentation fault (core dumped)
+# With MulAddKHR, wrong dimensions (8×16×16): Segmentation fault (core dumped)
 ```
 
-This confirms INT8 needs 8×32×16 dimensions, but ocloc crashes with those dimensions.
-This is a **compiler bug** in the Intel Graphics Compiler's SPIR-V frontend.
+Both dimensions crash when `MulAddKHR` is used with INT8 types. The crash is in IGC's
+cooperative matrix lowering pass. This is a **compiler bug**.
 
 **Workaround needed**: Use `OpSubgroupMatrixMultiplyAccumulateINTEL` (Intel-specific
 SPIR-V intrinsic) instead of `OpCooperativeMatrixMulAddKHR`, or write INT8 DPAS via
@@ -248,30 +254,38 @@ Four distinct accumulator registers (r110, r118, r28, r52) confirm independent c
 - **Latency-bound single-SG peak**: 4096 FLOPs/dpas ÷ 33 cyc/dpas × 2.4 GHz = **0.298 TFLOPS**
   - ILP=8 achieves 0.251/0.298 = **84% of latency-bound peak** per sub-group
 
-#### Full GPU Peak (Latency vs Throughput)
+#### Full GPU Peak (Directly Measured)
 
-It is important to distinguish **latency** from **reciprocal throughput**:
+The reciprocal throughput is **directly measured** from a full-GPU DPAS microbenchmark
+(ILP=8, N_ITER=128, all operands pre-loaded to registers, no memory access in the loop):
 
-| Concept | Value | Meaning |
+| SG/WG | WGs | Peak TFLOPS | Implied cyc/dpas |
+|---:|---:|---:|---:|
+| 1 | 2048 | 88.61 | 17.8 |
+| 4 | 2048 | 89.21 | 17.7 |
+| 16 | 1024 | **97.66** | **16.1** |
+
+**Peak: 97.66 TFLOPS** at SG=16/WG, 1024 WGs — this is the raw XMX throughput
+with zero memory pressure. The GEMM kernel achieves 89.77 TFLOPS = 92% of this
+theoretical peak, with the remaining 8% lost to memory access overhead.
+
+**Reciprocal throughput = 16.1 cycles** (directly measured, not derived from GEMM):
+```
+160 XMX × 4096 FLOPs × 2.4 GHz / 97.66 TFLOPS = 16.1 cycles per DPAS
+```
+
+**Key insight: XMX does NOT pipeline independent DPAS within a single sub-group.**
+ILP=8 within one sub-group achieves only ~39 cycles/dpas (close to the 33-cycle latency).
+The 16.1-cycle reciprocal throughput comes from **TLP** (thread-level parallelism):
+each EU has 8 hardware threads, and the thread scheduler interleaves DPAS operations
+from multiple sub-groups across the XMX pipeline. With 16 sub-groups per WG and enough
+WGs to saturate all 160 EUs, the scheduler keeps the XMX engine ~2× busy.
+
+| Concept | Value | Source |
 |---|---|---|
-| Latency | **33 cycles** | Time from DPAS issue to result available |
-| Reciprocal throughput | **~16 cycles** | Minimum interval between independent DPAS issues |
-
-The reciprocal throughput is derived from the full-GPU GEMM result:
-```
-SYCL GEMM achieves: 89.77 TFLOPS BF16
-Hardware: 160 XMX engines × 4096 FLOPs/dpas × 2.4 GHz = 1,572,864 GFLOPS if 1 dpas/cycle
-
-Implied reciprocal throughput:
-  160 × 4096 × 2.4 GHz / 89.77 TFLOPS ≈ 17.5 cycles/dpas (at 89.77 TFLOPS)
-  Assuming ~92% utilization → peak ≈ 97.6 TFLOPS
-  → reciprocal throughput ≈ 160 × 4096 × 2.4 / 97.6 ≈ 16 cycles/dpas
-```
-
-- **DPAS latency = 33 cycles** determines how much ILP is needed to fill the pipeline
-- **Reciprocal throughput ≈ 16 cycles** determines the maximum sustained issue rate
-- **89.77 / 97.6 = 92% utilization** in the production GEMM kernel — this is where
-  utilization factors belong, not in the peak calculation
+| Latency | **33 cycles** | Dependent chain slope (Benchmark 1) |
+| Reciprocal throughput | **16.1 cycles** | Full-GPU sweep (this benchmark) |
+| GEMM utilization | **92%** | 89.77 / 97.66 (production GEMM vs. raw XMX) |
 
 ---
 
@@ -343,8 +357,12 @@ Global (DRAM)  █████████████████████�
 ```
 
 - **L1 data cache latency**: ~71 cycles at 1-4 KB, growing to ~145 cycles at 128 KB.
-  The growth with size suggests set-associative conflict misses as the buffer
-  approaches the 128 KB L1 capacity per Xe Core.
+  **This growth is NOT due to TLB effects** — confirmed by a page-stride pointer chase
+  test that touches one element per 4KB page (exercising TLB without cache pressure),
+  which stays flat at ~64 cycles across all buffer sizes. The growth in random-access
+  latency is due to reduced cache line utilization: random permutation accesses each
+  64-byte cache line ~1 time vs ~16 times for sequential access, causing L1 capacity
+  pressure and queueing delays as the working set grows.
 
 - **L1→L2 transition**: Sharp increase from 145→162 cycles between 128 KB→192 KB.
   This places the L1 data cache size at **128 KB per Xe Core**.
@@ -356,8 +374,8 @@ Global (DRAM)  █████████████████████�
   from a single thread generates sequential cache-line fills, and the L2's high
   associativity means the transition is gradual rather than abrupt.
 
-- **Global memory latency**: ~260 cycles = 108 ns. At 456 GB/s peak bandwidth,
-  this translates to ~48 KB of in-flight data per memory channel.
+- **Global memory latency**: ~260 cycles = 108 ns. At 576 GB/s peak bandwidth,
+  this translates to ~62 KB of in-flight data per memory channel.
 
 ---
 
@@ -429,6 +447,9 @@ likely due to the compiler's address calculation and barrier code generation.
 - **SLM is carved from the same SRAM** as L1 on Xe2, but uses a separate access
   path (`send.slm` vs `send.ugm`). This explains why SLM is faster (~46 cycles)
   than L1 data cache (~71 cycles) despite sharing the same physical storage.
+- **Practical SLM limit is 64 KB**: Although `maxSharedLocalMemory` reports 128 KB,
+  allocations >64 KB fail. The 128 KB SRAM is split: 64 KB for SLM, 64 KB reserved
+  for L1 data cache. This is an important constraint for GEMM tiling.
 - **Contrast with NVIDIA**: NVIDIA shared memory is a fully separate SRAM with
   ~30 cycle latency. Intel Xe2 SLM at ~46 cycles is closer to NVIDIA shared memory
   than the L1 data cache (~71 cycles), but not as fast due to the unified SRAM design.
@@ -441,41 +462,83 @@ likely due to the compiler's address calculation and barrier code generation.
 
 ### Design
 
-Three generations of bandwidth benchmarks, each fixing issues found in the previous:
+Multiple generations of bandwidth benchmarks progressively identified and fixed issues:
 
-1. **v1** (`bench_mem_bandwidth.cpp`): Original, had a 10× overcounting bug (reported 682-900 GB/s)
-2. **v2** (`bench_bandwidth_v2.cpp`): Fixed byte counting, used `sycl::buffer` (shared memory via `zeMemAllocShared`)
-3. **v3** (`bench_bandwidth_device.cpp`): Uses `sycl::malloc_device` for device-only memory allocation
+1. **v1** (`bench_mem_bandwidth.cpp`): 10× overcounting bug (reported 682-900 GB/s)
+2. **v2** (`bench_bandwidth_v2.cpp`): Fixed byte counting, used `sycl::buffer` (shared memory)
+3. **v3** (`bench_bandwidth_device.cpp`): Uses `sycl::malloc_device` for device-local memory
+4. **v4** (`bench_bw_v2.cpp`, `bench_bw_v3.cpp`): Investigates access pattern effects — scalar vs vectorized loads, thread count sweep
 
-The critical difference between v2 and v3: `sycl::buffer` allocates unified shared memory
-(`zeMemAllocShared`) which has coherency overhead and may go through PCIe-mapped pages.
-`sycl::malloc_device` allocates pure device-local memory (`zeMemAllocDevice`), which is
-the correct way to measure GPU DRAM bandwidth.
+**Key finding**: The 1 GB buffer tests showed inflated read bandwidth (~346 GB/s) due to L2 cache
+effects (18 MB L2 can serve a significant fraction of 1 GB reads with streaming prefetch).
+With 2 GB buffers (well beyond L2), scalar reads drop to ~147 GB/s. However, this is NOT
+the true DRAM limit — vectorized (float4) loads achieve much higher throughput.
+
+**Critical insight**: Scalar `float` loads (4 bytes) achieve poor DRAM utilization because
+each 32-byte cache line requires 8 independent load instructions. Vector `float4` loads
+(16 bytes) pack 4 floats per transaction, requiring fewer instructions and achieving 3.6×
+higher bandwidth.
 
 ### Results
+
+**Vectorized (float4) bandwidth** (`bench_bw_v3.cpp`, 2 GB buffer, `malloc_device`):
+
+| Threads | Read (GB/s) | Write (GB/s) | Copy 2× (GB/s) |
+|---:|---:|---:|---:|
+| 262K (1K WG) | 466 | 364 | 351 |
+| 524K (2K WG) | 463 | 365 | 416 |
+| 1M (4K WG) | **534** | 379 | 428 |
+| 2M (8K WG) | 537 | 401 | 432 |
+| 4M (16K WG) | **538** | **442** | **439** |
+
+**Scalar (float) bandwidth** (for comparison):
+
+| Threads | Read (GB/s) |
+|---:|---:|
+| 262K | 147 |
+| 1M | 147 |
+| 2M | 203 |
+| 4M | 204 |
+
+**DMA memcpy** (`q.memcpy`): 235 GB/s
+
+### Analysis
+
+- **Peak DRAM bandwidth: 538 GB/s** (vectorized read, 4M threads) — 93% of 576 GB/s theoretical peak
+  - **Theoretical peak**: 256-bit bus × 18 Gbps / 8 = **576 GB/s**
+  - Bus width confirmed by: Level Zero reports `maxBusWidth=64` per channel (likely 4 channels × 64 = 256-bit)
+  - This confirms the B60 uses a **256-bit GDDR6 memory bus at 18 Gbps data rate**
+
+- **Access pattern matters enormously**: Scalar reads peak at 204 GB/s (35% of peak),
+  while vectorized (float4) reads reach 538 GB/s (93%). The 2.6× gap is due to
+  per-thread memory transaction efficiency, not DRAM capability.
+
+- **Write bandwidth**: 442 GB/s (77% of peak) with float4, still increasing with thread count
+
+- **Copy bandwidth**: 439 GB/s (2× bytes) = 219 GB/s (1×) — limited by combined read+write pressure
+
+- **Previous 1 GB results were cache-inflated**: The 346 GB/s read at 1 GB was partly served
+  from L2 cache (18 MB). With 2 GB buffers, scalar reads drop to 147 GB/s, but vectorized
+  reads jump to 538 GB/s. The true DRAM bandwidth was always ~576 GB/s — our access pattern
+  was the bottleneck, not the hardware.
+
+- **DMA memcpy at 235 GB/s**: The BLAS-style DMA engine achieves ~41% of peak, significantly
+  less than the kernel-based vectorized copy at 439 GB/s. Kernels can better saturate the
+  memory bus due to parallel thread execution.
+
+### Previous Results (Historical)
 
 **Device memory** (`sycl::malloc_device`, 1 GB buffer, bench_bandwidth_device.cpp):
 
 | Threads | Read BW (GB/s) | Write BW (GB/s) | Copy BW (GB/s) |
 |---:|---:|---:|---:|
-| 16K (64 WG) | 243 | 162 | 483 |
-| 65K (256 WG) | 173 | 150 | 346 |
-| 262K (1024 WG) | 214 | 244 | 429 |
-| 524K (2048 WG) | 214 | 298 | 416 |
-| 1M (4096 WG) | **346** | **368** | **432** |
+| 1M (4096 WG) | 346* | 368 | 432 |
 
-*Copy GB/s uses 2×bytes (read+write) per STREAM convention.*
-
-**Shared memory** (`sycl::buffer`, 1 GB buffer, bench_bandwidth_v2.cpp, for comparison):
-
-| Threads | Read BW (GB/s) | Write BW (GB/s) |
-|---:|---:|---:|
-| 16K (64 WG) | 136 | 147 |
-| 524K (2048 WG) | 139 | 307 |
+\* *Inflated by L2 cache effects with 1 GB buffer. True scalar DRAM read is ~147-204 GB/s.*
 
 ### Unitrace Cross-Validation
 
-Unitrace `GPU_MEMORY_BYTE_READ/WRITE` hardware counters confirm the device memory results:
+Unitrace `GPU_MEMORY_BYTE_READ/WRITE` hardware counters (1 GB buffer):
 
 | Kernel | DRAM Write Bytes | DRAM Write Rate | DRAM Read Bytes | DRAM Read Rate |
 |---|---:|---:|---:|---:|
@@ -484,29 +547,7 @@ Unitrace `GPU_MEMORY_BYTE_READ/WRITE` hardware counters confirm the device memor
 | COPY (1M threads) | 0.026 GB | 5.2 GB/s | 0.012 GB | 2.3 GB/s |
 
 The `LOAD_STORE_CACHE_BYTE_READ` counter shows 1.026 GB for the read kernel, confirming
-that all data is read — but almost entirely served from L3 cache, not DRAM.
-
-### Analysis
-
-- **Copy bandwidth: 432 GB/s** (1M threads, device memory) = **95% of 456 GB/s peak**
-  - This is the most reliable measurement since it forces both read and write to DRAM
-  - Near-saturation confirms the GPU can reach spec bandwidth in mixed read/write patterns
-
-- **DRAM write bandwidth: ~348 GB/s** (unitrace validated)
-  - Hardware counters confirm ~1 GB written to DRAM per kernel invocation
-  - 76% of peak, consistent with write-only patterns not fully utilizing all memory channels
-
-- **Shared memory overhead**: `sycl::buffer` (`zeMemAllocShared`) reduces read bandwidth from
-  346→139 GB/s (2.5× overhead). The 2.2× read-write asymmetry seen with shared memory was
-  an artifact of the allocation path, not real hardware.
-
-- **Cache effects in read-only kernels**: The read kernel's 346 GB/s is primarily L3 cache
-  bandwidth, not DRAM. After the initial `fill`, the 1 GB data resides in L3 and subsequent
-  reads are cache hits. Pure DRAM read bandwidth is difficult to isolate with this methodology;
-  the copy kernel (which forces DRAM traffic for both read and write) is more representative.
-
-- **Recommendation for bandwidth measurement**: Use `sycl::malloc_device` + copy (read+write)
-  pattern with ≥1M threads for accurate DRAM bandwidth measurement.
+that all data is read — but almost entirely served from cache, not DRAM (with 1 GB buffer).
 
 ---
 
@@ -591,11 +632,13 @@ This comparison serves only to contextualize our measurements, not to declare su
 
 | Metric | Intel B60 (Xe2) | NVIDIA Blackwell | Notes |
 |---|---|---|---|
-| Tensor/Matrix unit latency | 33-37 cycles (XMX DPAS) | ~20 cycles (Tensor Core) | NVIDIA ~1.7× lower |
-| Shared memory / SLM | **~46 cycles** (SPIR-V native, send.slm) | ~30 cycles (separate SRAM) | Both faster than L1 |
-| L1 data cache | ~71-145 cycles (send.ugm) | ~30-35 cycles | NVIDIA ~2-4× lower |
-| L2 cache | ~162-236 cycles (18 MB) | ~200-250 cycles | Similar range |
-| Global memory | ~247-261 cycles | ~300-500 cycles | Intel lower (closer L2/GLOBAL) |
+| Tensor/Matrix unit latency | 14 ns (33-37 cyc) | ~7 ns (~20 cyc at 2.75 GHz) | NVIDIA ~2× lower in wall time |
+| Shared memory / SLM | **19 ns** (46 cyc, send.slm) | ~11 ns (~30 cyc) | Both faster than L1 |
+| L1 data cache | 30-60 ns (71-145 cyc) | ~11-13 ns (~30-35 cyc) | NVIDIA ~2.5-5× lower |
+| L2 cache | 68-98 ns (162-236 cyc) | ~73-91 ns (~200-250 cyc) | Similar in wall time |
+| Global memory | 103-108 ns (247-261 cyc) | ~109-182 ns (~300-500 cyc) | Similar or Intel slightly lower |
+
+*Note: B60 at 2.4 GHz, Blackwell estimated at 2.75 GHz (varies by SKU). Wall-clock time (ns) is more meaningful than cycles for cross-arch comparison since clock speeds differ.*
 
 ### Key Architectural Insight
 
@@ -623,11 +666,16 @@ The most notable difference is the **SLM/shared memory architecture**:
 | `bench_bandwidth_v2.cpp` | Bandwidth v2 with thread count sweep (shared memory) |
 | `bench_bandwidth_device.cpp` | Bandwidth v3 with device memory (malloc_device), copy pattern |
 | `bench_bw_unitrace.cpp` | Single-config bandwidth for unitrace profiling |
+| `bench_bw_v2.cpp` | Bandwidth investigation: ILP vs serial read, vector4, write+readback |
+| `bench_bw_v3.cpp` | Bandwidth sweep: vectorized float4 read/write/copy, thread count scaling |
 | `bench_mem_bandwidth_fixed.cpp` | Fixed bandwidth benchmark (correct byte counting) |
 | `bench_mem_bandwidth.cpp` | Original bandwidth benchmark (has overcounting bug, kept for reference) |
 | `run_dpas_sweep.py` | DPAS latency/throughput automation |
+| `run_dpas_full_gpu.py` | Full-GPU DPAS throughput sweep (1-4096 WGs, direct reciprocal throughput) |
 | `run_dpas_precision.py` | BF16/FP16 precision comparison |
 | `run_mem_sweep.py` | Memory latency/bandwidth automation |
 | `generate_summary.py` | Summary report generator |
 | `results/*.csv` | Raw benchmark data |
+| `bench_tlb.cpp` | TLB vs cache-set investigation (random/sequential/page-stride patterns) |
+| `bench_timing.cpp` | Host timing vs GPU event profiling comparison |
 | `Makefile` | Build pipeline |

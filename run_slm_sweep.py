@@ -120,7 +120,7 @@ def main():
         run_cmd("g++ -std=c++17 -O2 -o spirv_runner spirv_runner.cpp -lze_loader -lm")
 
     ghz = 2.4
-    sizes = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+    sizes = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 24576, 32768]
 
     results = []
 
