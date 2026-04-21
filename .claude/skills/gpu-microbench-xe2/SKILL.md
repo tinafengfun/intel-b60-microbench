@@ -256,13 +256,12 @@ Scalar `float` loads achieve only ~204 GB/s read bandwidth (even with ILP/extra 
 Vector `float4` loads achieve **538 GB/s** (93% of 576 GB/s peak). The 2.6× gap is due to
 per-thread memory transaction efficiency. Always use vectorized loads for bandwidth benchmarks.
 
-### 10. XMX Doesn't Pipeline Independent DPAS Within a Sub-group
+### 10. XMX Pipeline Saturation Requires ILP≥14
 
-ILP=8 independent DPAS chains within a single sub-group achieve only ~39 cycles/dpas
-(close to 33 cycle latency). The 16.1 cycle reciprocal throughput comes from **TLP**
-(thread-level parallelism): each EU has 8 hardware threads, and the thread scheduler
-interleaves DPAS operations from multiple sub-groups. Use multi-SG work-groups to
-measure true XMX throughput.
+ILP=8 independent DPAS chains within a single sub-group achieve only ~31 cycles/dpas
+(close to 33 cycle latency). But **ILP≥14 saturates the pipeline at ~16 cycles/dpas**,
+matching reciprocal throughput. ILP=16 uses all 256 GRF registers with no spills.
+For GEMM: aim for at least 14 independent DPAS chains per sub-group to maximize XMX utilization.
 
 ### 11. L1 Pointer Chase Growth Is NOT TLB
 
@@ -274,6 +273,30 @@ utilization with random access patterns, not TLB effects. PAGE_STRIDE test (1 el
 
 Host-side `chrono` timing includes ~6.7 μs submit+wait overhead. For kernels <50 μs,
 use GPU event profiling or the slope method. For kernels >1 ms, host and GPU timing agree within 1%.
+
+### 13. No XMX+ALU Dual-Issue on Xe2
+
+Adding 0-16 independent FP32 ALU operations per DPAS iteration has zero impact on cycle count.
+The EU thread is completely blocked during the SBID stall (~33 cycles). Xe2 cannot dual-issue
+XMX and ALU operations. ALU work is "free" only because it executes during the DPAS wait.
+
+### 14. Barriers Can IMPROVE Throughput
+
+Counter-intuitively, OpControlBarrier every 4-16 iterations **improves** DPAS throughput
+by up to 39% vs no barriers. Without synchronization, SGs compete for shared resources.
+Moderate barriers keep SGs in lockstep, improving XMX scheduling. Cost: only 2-11 cycles
+per barrier (nearly free).
+
+### 15. Cooperative Matrix Reload from Cache Is Free
+
+Reloading A/B tiles from cache-resident global memory each iteration costs zero extra cycles
+(and can be slightly faster due to reduced register pressure). The cooperative matrix load
+overlaps with the DPAS SBID stall. GEMM can freely reload operands when data is in L1/L2.
+
+### 16. Per-WG Dispatch Cost Is ~40 ns
+
+Each work-group adds ~40 ns (96 cycles) of scheduling overhead, with a fixed ~3.7 μs
+dispatch latency. Larger WGs (more SGs) amortize this cost: 16 SGs/WG = 2.5 ns/SG.
 
 ## Tools
 

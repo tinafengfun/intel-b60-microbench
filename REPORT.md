@@ -274,18 +274,218 @@ theoretical peak, with the remaining 8% lost to memory access overhead.
 160 XMX × 4096 FLOPs × 2.4 GHz / 97.66 TFLOPS = 16.1 cycles per DPAS
 ```
 
-**Key insight: XMX does NOT pipeline independent DPAS within a single sub-group.**
-ILP=8 within one sub-group achieves only ~39 cycles/dpas (close to the 33-cycle latency).
-The 16.1-cycle reciprocal throughput comes from **TLP** (thread-level parallelism):
+**Key insight: XMX CAN pipeline independent DPAS within a single sub-group, but requires ILP≥14.**
+ILP=8 achieves ~31 cycles/dpas (near the 33-cycle latency), but ILP=14-16 drops to
+**~16 cycles/dpas** — matching the full-GPU reciprocal throughput. The XMX pipeline
+needs at least 14 independent chains to fully saturate within a single thread.
+
+The 16.1-cycle reciprocal throughput also manifests via **TLP** (thread-level parallelism):
 each EU has 8 hardware threads, and the thread scheduler interleaves DPAS operations
-from multiple sub-groups across the XMX pipeline. With 16 sub-groups per WG and enough
-WGs to saturate all 160 EUs, the scheduler keeps the XMX engine ~2× busy.
+from multiple sub-groups. With 16 sub-groups per WG and enough WGs to saturate all
+160 EUs, the scheduler keeps the XMX engine ~2× busy even without ILP.
+
+#### ILP Saturation Detail
+
+| ILP | Cycles/DPAS | Interpretation |
+|---:|---:|---|
+| 1 | 252.8 | Pure dependent latency (including loop overhead) |
+| 2 | 130.4 | ~2× parallelism |
+| 4 | 67.2 | ~4× parallelism |
+| 8 | 31.4 | Near-latency limited |
+| 10 | 24.2 | Starting to pipeline |
+| 12 | 20.2 | Pipelining |
+| 14 | 16.7 | Near-reciprocal throughput |
+| 16 | 15.9 | **Reciprocal throughput saturated** |
+
+Each accumulator is an 8×16 float matrix = 512 bytes = 16 GRF registers.
+ILP=16 uses 256 GRF registers = 100% of the 256-register GRF file.
+No register spills detected in GEN ASM at ILP=16 — the compiler manages allocation.
 
 | Concept | Value | Source |
 |---|---|---|
 | Latency | **33 cycles** | Dependent chain slope (Benchmark 1) |
 | Reciprocal throughput | **16.1 cycles** | Full-GPU sweep (this benchmark) |
+| ILP saturation point | **ILP≥14** | Needed to reach reciprocal throughput within single SG |
 | GEMM utilization | **92%** | 89.77 / 97.66 (production GEMM vs. raw XMX) |
+
+---
+
+## Benchmark 4b: DPAS Scheduling Overhead
+
+### Design
+
+**Goal**: Quantify how different scheduling patterns affect DPAS throughput — barriers,
+operand reloads, store-back, ALU interleaving, and cross-SG coordination.
+
+### Results
+
+#### 4b.1: SBID Stall Behavior (DPAS + ALU Interleave)
+
+Dependent DPAS chain with N independent scalar FP32 ALU operations per iteration:
+
+| ALU ops/iter | Cycles/iter | Delta vs baseline |
+|---:|---:|---:|
+| 0 | 256.9 | 0.0 |
+| 1 | 254.6 | -2.2 |
+| 2 | 259.8 | 3.0 |
+| 4 | 266.5 | 9.6 |
+| 8 | 258.0 | 1.1 |
+| 16 | 252.4 | -4.5 |
+
+**Finding**: Adding 0-16 independent FP32 ALU operations has **zero measurable impact** on
+DPAS iteration time. The EU thread is **completely blocked during SBID stall** — the ALU ops
+execute during the ~33 cycle DPAS wait time. **Xe2 EU cannot dual-issue XMX + ALU within
+a single thread.**
+
+This is confirmed at full-GPU scale (ILP=8, 1024 WGs): adding 0-8 ALU ops per iteration
+produces identical throughput (~39 TFLOPS).
+
+#### 4b.2: Barrier Overhead
+
+OpControlBarrier with varying SGs per work-group (barrier every iteration, N_ITER=64):
+
+| SGs/WG | DPAS only (cyc/dpas) | DPAS+barrier (cyc/dpas) | Barrier overhead |
+|---:|---:|---:|---:|
+| 1 | 254.5 | 261.0 | +6.6 |
+| 2 | 124.2 | 134.8 | +10.7 |
+| 4 | 64.1 | 67.3 | +3.2 |
+| 8 | 32.2 | 34.8 | +2.6 |
+| 16 | 16.8 | 18.7 | +2.0 |
+
+**Finding**: OpControlBarrier is **very cheap** — 2-11 cycles per barrier, decreasing with
+more SGs. The barrier is essentially free when all SGs reach it quickly.
+
+For 1 SG (no other SGs to synchronize), the barrier is ~6.6 cycles (a no-op synchronization).
+OpMemoryBarrier caused ocloc segfaults (compiler bug).
+
+#### 4b.3: Operand Reload from Global Memory
+
+Reloading A/B cooperative matrix tiles from cache-resident global memory each iteration:
+
+| Reload pattern | Cycles/iter | Delta |
+|---|---:|---:|
+| Pre-load once (baseline) | 293.9 | 0.0 |
+| Reload A only | 262.2 | -31.7 |
+| Reload B only | 265.2 | -28.7 |
+| Reload A+B | 265.4 | -28.5 |
+
+**Finding**: Reloading tiles from cache-resident global memory is **free or slightly faster**
+than holding them in registers. The cooperative matrix load can overlap with the DPAS stall,
+and reduced register pressure may improve scheduling. This means GEMM tiling can freely
+reload operands without throughput penalty when data is cache-resident.
+
+#### 4b.4: Store-to-Global Frequency
+
+OpCooperativeMatrixStoreKHR at varying intervals during DPAS loop:
+
+| Store interval | Cycles/iter | Delta |
+|---|---:|---:|
+| Never | 254.5 | 0.0 |
+| Every 1 | 279.7 | +25.2 |
+| Every 2 | 268.7 | +14.2 |
+| Every 4 | 258.2 | +3.7 |
+| Every 8 | 254.7 | +0.2 |
+| Every 16 | 256.9 | +2.4 |
+
+**Finding**: Each store costs ~25 cycles (cooperative matrix store of 8×16 float = 512 bytes).
+Stores every 4+ iterations are effectively free (overlapped with DPAS execution).
+For GEMM: writing accumulator tiles every 4+ K-tile iterations has negligible overhead.
+
+#### 4b.5: Barrier Frequency Impact on Throughput
+
+ILP=8 DPAS with barriers at varying intervals, 160 WGs:
+
+| Barrier interval | 4 SGs TFLOPS | 8 SGs TFLOPS | 16 SGs TFLOPS |
+|---|---:|---:|---:|
+| Never | 71.6 | 79.5 | 84.2 |
+| Every 4 | **86.9** | **108.3** | **117.1** |
+| Every 8 | 71.6 | **108.5** | **110.3** |
+| Every 16 | 71.7 | 108.4 | 110.1 |
+| Every 32 | 71.7 | 108.0 | 103.6 |
+| Every 128 | 71.7 | 86.8 | 88.2 |
+
+**Finding**: Barriers every 4-16 iterations **improve** throughput by up to 39% vs no barriers!
+Without barriers, SGs run unsynchronized and compete for shared resources. Moderate
+synchronization keeps SGs in lockstep, improving XMX scheduling efficiency.
+
+**GEMM implication**: Barriers every 4-8 K-tiles may improve throughput by 20-40%.
+The optimal barrier frequency depends on SGs/WG: more SGs benefit more from frequent barriers.
+
+#### 4b.6: Software Pipelining (Prefetch Overlap)
+
+Overlapping DPAS with next-tile loads:
+
+| Pattern | Cycles/iter | Delta |
+|---|---:|---:|
+| DPAS only | 296.3 | 0.0 |
+| DPAS + prefetch A (after DPAS) | 285.6 | -10.8 |
+| DPAS + prefetch A+B (after DPAS) | 314.8 | +18.5 |
+| Load A+B → DPAS (sequential) | 310.2 | +13.9 |
+
+**Finding**: Prefetching A alone is **11 cycles faster** than baseline — the load overlaps
+with DPAS execution. Prefetching both A+B adds overhead (can't fully overlap two loads).
+Sequential load-then-DPAS is slower by ~14 cycles. Software pipelining is effective when
+limited to one tile prefetch per iteration.
+
+---
+
+## Benchmark 4c: Thread Scheduling Granularity
+
+### Design
+
+**Goal**: Understand how work-group sizing, EU thread switching, and dispatch overhead
+affect DPAS throughput.
+
+### Results
+
+#### 4c.1: SG/WG Sweep at Fixed Total Work (1280 SGs)
+
+ILP=8, N_ITER=128, total SGs fixed at 1280 (160 EU × 8 threads):
+
+| SGs/WG | WGs | WG size | TFLOPS |
+|---:|---:|---:|---:|
+| 1 | 1280 | 16 | 80.20 |
+| 2 | 640 | 32 | 80.39 |
+| 4 | 320 | 64 | **88.02** |
+| 8 | 160 | 128 | 80.29 |
+| 16 | 80 | 256 | 80.50 |
+| 32 | 40 | 512 | 82.15 |
+
+**Finding**: SG/WG ratio has minimal impact (80-88 TFLOPS) at fixed total work.
+SG/WG=4 is slightly best. WG granularity is not a significant bottleneck for DPAS throughput.
+
+#### 4c.2: EU Thread Context Switch (ILP=1, Single WG)
+
+ILP=1, N_ITER=1024, single work-group with varying SG count:
+
+| SGs/WG | Total time (ns) | Cycles/DPAS | Ratio to latency |
+|---:|---:|---:|---:|
+| 1 | 20,048 | 47.0 | 1.42× |
+| 2 | 20,220 | 23.7 | 0.72× |
+| 4 | 20,161 | 11.8 | 0.36× |
+| 8 | 20,409 | 6.0 | 0.18× |
+| 16 | 20,411 | 3.0 | 0.09× |
+
+**Finding**: Total wall-clock time is ~20 μs regardless of SG count. All SGs run
+**in parallel on different EUs** — each additional SG is scheduled on a free EU thread.
+The cycles/DPAS scales inversely because we divide by total work, but wall time is constant.
+
+This confirms: within a single WG, multiple SGs execute simultaneously on different EUs.
+TLP comes from EU parallelism, not intra-EU thread switching latency hiding.
+
+#### 4c.3: Dispatch Overhead Per WG
+
+Trivial 1-DPAS kernel, sweeping WG count:
+
+```
+Linear regression: time = 40.1 ns/WG × n_wg + 3,744 ns
+Per-WG dispatch cost: 40.1 ns (96 cycles)
+Fixed overhead: 3,744 ns (8,986 cycles)
+```
+
+**Finding**: Each work-group adds ~40 ns (96 cycles) of scheduling overhead.
+The fixed dispatch latency is ~3.7 μs. For GEMM: larger WGs (more SGs per WG) amortize
+the per-WG cost. A 256-thread WG (16 SGs) costs 40 ns per 16 SGs = 2.5 ns/SG.
 
 ---
 
@@ -672,6 +872,10 @@ The most notable difference is the **SLM/shared memory architecture**:
 | `bench_mem_bandwidth.cpp` | Original bandwidth benchmark (has overcounting bug, kept for reference) |
 | `run_dpas_sweep.py` | DPAS latency/throughput automation |
 | `run_dpas_full_gpu.py` | Full-GPU DPAS throughput sweep (1-4096 WGs, direct reciprocal throughput) |
+| `run_dpas_ilp_sweep.py` | ILP 1-16 sweep (register pressure, XMX pipeline saturation) |
+| `run_dpas_schedule_sweep.py` | DPAS scheduling patterns (barrier, ALU, reload, store, throughput) |
+| `run_dpas_multi_sg.py` | Multi-SG coordination (cross-SG dep, barrier freq, staging, pipeline) |
+| `run_thread_sched_sweep.py` | Thread scheduling granularity (SG/WG sweep, context switch, dispatch overhead) |
 | `run_dpas_precision.py` | BF16/FP16 precision comparison |
 | `run_mem_sweep.py` | Memory latency/bandwidth automation |
 | `generate_summary.py` | Summary report generator |

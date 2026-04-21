@@ -1,0 +1,5 @@
+pattern,median_ns,cyc_per_iter,delta_cyc
+dpas_only,7902.0,296.325,0
+dpas_prefetch_a,7615.0,285.5625,-10.762499999999989
+dpas_prefetch_ab,8396.0,314.84999999999997,18.524999999999977
+load_dpas_sequential,8273.0,310.2375,13.912500000000023

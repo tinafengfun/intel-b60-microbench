@@ -1,0 +1,3 @@
+type,median_ns,cyc_per_round,dep_overhead_cyc
+independent,7521.0,282.03749999999997,
+dependent,10116.0,379.34999999999997,194.625
