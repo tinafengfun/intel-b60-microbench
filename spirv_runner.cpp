@@ -167,8 +167,20 @@ int main(int argc, char** argv) {
     double sum = 0;
     for (auto t : times_ns) sum += t;
     double mean = sum / times_ns.size();
+    double median = times_ns[times_ns.size()/2];
+
+    // Standard deviation and 95% CI
+    double sq_sum = 0;
+    for (auto t : times_ns) sq_sum += (t - mean) * (t - mean);
+    double stddev = sqrt(sq_sum / times_ns.size());
+    double cv = (mean > 0) ? (stddev / mean * 100.0) : 0;
+    // 95% CI: t_{0.025, n-1} ≈ 1.96 for large n
+    double ci_half = 1.96 * stddev / sqrt((double)times_ns.size());
+
     printf("Runs=%d  Median=%.1f ns  Mean=%.1f ns  Min=%.1f ns  Max=%.1f ns\n",
-           repeats, times_ns[times_ns.size()/2], mean, times_ns.front(), times_ns.back());
+           repeats, median, mean, times_ns.front(), times_ns.back());
+    printf("StdDev=%.1f ns  CV=%.1f%%  95%%CI=[%.1f, %.1f] ns\n",
+           stddev, cv, mean - ci_half, mean + ci_half);
 
     printf("\nOutput[0..7]:");
     float* out = (float*)bufs[0];
