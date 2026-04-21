@@ -356,6 +356,94 @@ No register spills detected in GEN ASM at ILP=16 — the compiler manages alloca
 | ILP saturation point | **ILP≥14** | Needed to reach reciprocal throughput within single SG |
 | GEMM utilization | **92%** | 89.77 / 97.66 (production GEMM vs. raw XMX) |
 
+#### DPAS Pipeline Depth Analysis
+
+Combining the latency and reciprocal throughput measurements reveals the XMX pipeline structure:
+
+| Parameter | Value | Source |
+|---|---|---|
+| DPAS latency | **33 cycles** | Benchmark 1 slope method |
+| DPAS reciprocal throughput | **16.1 cycles** | Benchmark 4 full-GPU sweep |
+| ILP=1 per-iteration time | **252.8 cycles** | ILP Saturation table (raw, N=64) |
+| ILP saturation point | **ILP≥14** | ILP Saturation table |
+
+**Pipeline depth = 2:**
+
+```
+Pipeline Depth = ⌈Latency / Reciprocal Throughput⌉ = ⌈33 / 16.1⌉ = 2
+```
+
+The XMX hardware has a **2-stage pipeline** — at most 2 DPAS instructions can be in-flight
+simultaneously (one in each half of the pipeline). A new DPAS can be issued every 16.1 cycles,
+with results available after 33 cycles.
+
+The ILP saturation data confirms this:
+
+| ILP | Cycles/DPAS | Behavior |
+|---:|---:|---|
+| 8 | 31.4 | ≈ 33, hitting the latency ceiling |
+| 10 | 24.2 | Breaking through latency, pipeline starting to fill |
+| 14 | 16.7 | ≈ 16.1, pipeline fully utilized |
+| 16 | 15.9 | Saturated |
+
+From ILP=8→16, cycles/DPAS drops from 31→16 — approximately **2× improvement**, consistent
+with filling a 2-stage pipeline.
+
+**Why ILP=16 is needed instead of ILP=2?**
+
+With a 2-stage pipeline, one might expect ILP=2 to suffice. The reason ILP≈16 is required
+in practice is that **each chain's iteration includes ~220 cycles of loop overhead** beyond
+the 33-cycle DPAS:
+
+```
+Single-chain timeline (ILP=1, 252.8 cycles/iter):
+|-- DPAS 33cy --|-- loop overhead ~220cy (branch, phi, counter, addr calc, send.ugm...) --|
+                 ^
+                 XMX is idle during this time
+```
+
+To keep XMX busy every 16.1 cycles, enough chains must fill the full 252.8-cycle interval:
+
+```
+ILP needed = ⌈252.8 / 16.1⌉ = 16
+```
+
+With ILP=16, chains take turns feeding DPAS:
+
+```
+XMX timeline:
+|DPAS₀|16cy|DPAS₁|16cy|DPAS₂|16cy|...|DPAS₁₅|16cy|DPAS₀|...
+                                                     ^
+                                                     Chain 0's 252.8cy interval completes,
+                                                     ready to issue its next DPAS
+```
+
+**Three paths to peak throughput:**
+
+| Method | Mechanism | Requirement | Evidence |
+|---|---|---|---|
+| **Pure ILP** | Multiple independent chains in one thread | ILP≥14 (consumes all 256 GRF) | ILP=16 → 15.9 cyc/DPAS |
+| **Pure TLP** | Multiple threads share XMX via scheduler | 16 SG/WG + enough WGs | SG=16, 1024 WGs → 97.66 TFLOPS |
+| **ILP + TLP** | Combined approach | Moderate ILP × many threads | ILP=8, SG=16 → near-peak |
+
+Pure TLP works because each EU has 8 hardware threads. Even with ILP=1 (one DPAS every
+~253 cycles per thread), 8 threads alternating yields ~31.6 cycles/DPAS per EU — close to
+the latency ceiling. With 160 EUs running in parallel, aggregate XMX utilization approaches
+peak via sheer parallelism.
+
+**Key implication: loop overhead is the bottleneck, not pipeline depth.**
+
+If the ~220 cycles of loop overhead were eliminated (e.g., fully unrolled loop producing a
+pure DPAS instruction stream in GEN ASM), then:
+
+```
+ILP needed (no overhead) = ⌈33 / 16.1⌉ = 2
+```
+
+ILP=2 would suffice. This means **the critical optimization for GEMM is reducing non-DPAS
+instruction overhead** — through loop unrolling, software pipelining, and hiding `send.ugm`
+loads behind the SBID stall (as validated by experiments 4b.3 and 4b.6).
+
 **GEMM kernel source**: The 89.77 TFLOPS result comes from a **custom SYCL GEMM kernel**
 (`sycl-xmx-gemm/src/kernels/gemm_v20_best.cpp`) using `sycl::ext::oneapi::matrix` extensions.
 It is NOT from oneMKL or oneDNN. Key characteristics:
