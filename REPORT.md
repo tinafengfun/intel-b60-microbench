@@ -328,6 +328,8 @@ over the workload. For small workloads (ILP=1, N_ITER=64, total time ~6.8 μs), 
 overhead is ~54% of the measurement, inflating cycles/DPAS. The relative scaling between
 ILP values is still valid because all use the same N_ITER=64.
 
+*N_ITER=64, single SG, single WG. Different from Benchmark 4 main table (N_ITER=128).*
+
 | ILP | Cycles/DPAS | Interpretation |
 |---:|---:|---|
 | 1 | 252.8 | Dispatch-dominated (6.8 μs total, 54% overhead) |
@@ -485,9 +487,13 @@ Dependent DPAS chain with N independent scalar FP32 ALU operations per iteration
 | 16 | 252.4 | -4.5 |
 
 **Finding**: Adding 0-16 independent FP32 ALU operations has **zero measurable impact** on
-DPAS iteration time. The EU thread is **completely blocked during SBID stall** — the ALU ops
-execute during the ~33 cycle DPAS wait time. **Xe2 EU cannot dual-issue XMX + ALU within
-a single thread.**
+DPAS iteration time. The ALU ops execute during the ~33 cycle SBID stall, absorbed entirely
+by the stall window. This means the EU ALU pipeline **is available** during XMX execution —
+the ALU instructions do run in parallel with DPAS — but the stall window is long enough that
+up to 16 FP32 ops complete before the DPAS result is ready. The practical consequence is that
+ALU work is "free" within the 33-cycle stall budget, but the EU cannot start a *second* DPAS
+or any operation that depends on the DPAS result until the stall resolves. If ALU count
+exceeded the stall budget (>>33 FP32 ops), total time would increase proportionally.
 
 This is confirmed at full-GPU scale (ILP=8, 1024 WGs): adding 0-8 ALU ops per iteration
 produces identical throughput (~39 TFLOPS).
@@ -876,15 +882,22 @@ likely due to the compiler's address calculation and barrier code generation.
   SRAM accessed via `send.slm`. The latency growth with working set size has two likely
   causes — neither of which is bank conflict (this is a **single-thread** serial
   dependent chase, so only one access is in-flight at a time):
-  1. **Address decoding and routing overhead**: Larger working sets exercise more banks,
+  1. **SRAM set/way replacement effects** (more likely): The SLM SRAM has finite
+     associativity. A random permutation maps many virtual addresses to the same SRAM
+     set, causing conflict misses and row activation overhead as working set grows.
+     This is analogous to the cache set pressure documented in the L1 data cache
+     (71→145 cycles growth). A distinguishing experiment would be: use a stride
+     access pattern (sequential or power-of-2 stride) instead of random permutation
+     to reduce set conflicts, and observe whether latency growth flattens.
+  2. **Address decoding and routing overhead**: Larger working sets exercise more banks,
      and the `send.slm` path may incur additional routing latency when the target address
-     spans many physical banks. This is an address-decode cost, not a conflict.
-  2. **SRAM row/way replacement effects**: Like the L1 data cache, the SLM SRAM has
-     finite associativity. A random permutation pattern maps many virtual addresses to
-     the same SRAM set, causing conflict misses and row activation overhead as the
-     working set grows — analogous to the cache set pressure seen in L1.
+     spans many physical banks. A distinguishing experiment would be: fix element count
+     but vary the address range (e.g., place N elements at different SLM offsets) to
+     separate address-decode cost from capacity pressure.
   The growth pattern (46 at 256B → 117 at 64KB) is smoother than L1's (71→145),
-  consistent with the simpler SRAM structure lacking a full tag hierarchy.
+  consistent with the simpler SRAM structure lacking a full tag hierarchy. Both
+  hypotheses could be resolved with the experiments above, but do not affect the
+  measured latency values or GEMM tiling recommendations.
 - **Contrast with NVIDIA**: NVIDIA shared memory is a fully separate SRAM with
   ~30 cycle latency and explicit 32-bank architecture. Intel Xe2 SLM at ~46 cycles
   uses a unified SRAM design with `send.slm` path. The banked SRAM behavior is
