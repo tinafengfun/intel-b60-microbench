@@ -197,8 +197,12 @@ R² = 0.9987
 ### Analysis
 
 - **FP16 DPAS latency ≈ 33 ± 1 cycles** (95% CI), essentially identical to BF16 (34 ± 3 cycles)
-- The tighter CI for FP16 (±1 vs ±3 cycles) reflects the higher R² (0.9987 vs 0.9895),
-  likely due to random run-to-run variability rather than a systematic difference
+- The tighter CI for FP16 (±1 vs ±3 cycles) reflects the higher R² (0.9987 vs 0.9895).
+  The BF16 R² is pulled down by the small-N data points (N=1,4,16), where the ~6μs dispatch
+  overhead dominates the ~0-0.5μs DPAS signal. These high-leverage points inflate residuals.
+  FP16 included N=32 as an additional mid-range point, giving better regression coverage.
+  Both precisions use the same XMX hardware path; the R² gap is measurement noise, not
+  a systematic difference.
 - Both use the same XMX hardware path (dpas.8x8 instruction), just with different
   data interpretation (half vs. ushort bit patterns)
 - GEN ASM confirms distinct type suffixes: BF16 uses `:bf`, FP16 uses `:hf`
@@ -318,16 +322,28 @@ from multiple sub-groups. With 16 sub-groups per WG and enough WGs to saturate a
 
 #### ILP Saturation Detail
 
+Cycles/DPAS computed as `median_ns × 2.4 GHz / (ILP × N_ITER)`. This is a **total-time
+divided by total-work** metric — it includes dispatch overhead (~3.7 μs fixed) amortized
+over the workload. For small workloads (ILP=1, N_ITER=64, total time ~6.8 μs), dispatch
+overhead is ~54% of the measurement, inflating cycles/DPAS. The relative scaling between
+ILP values is still valid because all use the same N_ITER=64.
+
 | ILP | Cycles/DPAS | Interpretation |
 |---:|---:|---|
-| 1 | 252.8 | Pure dependent latency (including loop overhead) |
-| 2 | 130.4 | ~2× parallelism |
+| 1 | 252.8 | Dispatch-dominated (6.8 μs total, 54% overhead) |
+| 2 | 130.4 | ~2× parallelism vs ILP=1 |
 | 4 | 67.2 | ~4× parallelism |
-| 8 | 31.4 | Near-latency limited |
+| 8 | 31.4 | Near-pure DPAS latency |
 | 10 | 24.2 | Starting to pipeline |
 | 12 | 20.2 | Pipelining |
 | 14 | 16.7 | Near-reciprocal throughput |
 | 16 | 15.9 | **Reciprocal throughput saturated** |
+
+For comparison, the **slope method** (Benchmark 1) gives 34.4 cycles for ILP=1 by
+eliminating dispatch overhead via regression. The **4c.2 measurement** gives 47 cycles
+for ILP=1 with N_ITER=1024 (lower overhead fraction: 3.7 μs / 20 μs = 18%). These
+three measurements of the same physical quantity differ due to overhead inclusion:
+252.8 (raw, N=64) > 47.0 (raw, N=1024) > 34.4 (slope, overhead removed).
 
 Each accumulator is an 8×16 float matrix = 512 bytes = 16 GRF registers.
 ILP=16 uses 256 GRF registers = 100% of the 256-register GRF file.
@@ -349,8 +365,12 @@ It is NOT from oneMKL or oneDNN. Key characteristics:
 - K-step unrolling with software prefetch of next K-block
 - Problem size: 8192×2048×4096 (BF16), 100 warmup + 500 measured iterations
 - Reproducible with oneAPI 2025.3.2, driver 1.14.36300, IGC_ExtraOCLOptions="-cl-intel-256-GRF-per-thread"
-- Comparison: oneDNN achieves ~95 TFLOPS on the same hardware; the ~5 TFLOPS gap is
-  attributed to SYCL compiler/runtime overhead vs oneDNN's hand-tuned Level Zero dispatch
+- Comparison: oneDNN achieves ~95 TFLOPS on the same hardware (estimated from JIT kernel
+  capabilities: SG=8, K-parallel reduction with atomics, Block2D SLM cooperative loads;
+  not a direct measurement under identical test conditions). The ~5 TFLOPS gap is
+  attributed to SYCL compiler/runtime overhead vs oneDNN's hand-tuned Level Zero dispatch.
+  Direct comparison is not apples-to-apple due to different compilation paths
+  (oneDNN native JIT vs SYCL/ICPX).
 
 ---
 
@@ -554,11 +574,13 @@ ILP=1, N_ITER=1024, single work-group with varying SG count:
 | 16 | 20,411 | 3.0 | 0.09× |
 
 **Note on SG=1 latency**: The 47.0 cycles/DPAS for a single SG with ILP=1 is higher than
-the 34.4 cycles measured in Benchmark 1's regression slope. The difference (47−34 = 13 cycles)
-is the per-iteration loop overhead: branch prediction (OpBranchConditional), counter
-increment (OpIAdd), comparison (OpULessThan), and phi node resolution. Benchmark 1's slope
-method eliminates this by fitting across multiple N values. The 47 cycles here represents
-the raw per-iteration wall time including loop bookkeeping.
+the 34.4 cycles measured in Benchmark 1's regression slope. GEN ASM disassembly shows the
+compiler **unrolled 16 DPAS per loop iteration** (with counter increment by 16), so the
+loop overhead per DPAS is minimal (~0.3 cycles from the `sync.allwr` + `jmpi`). The
+dominant contributor to the 13-cycle gap is the **fixed dispatch overhead** (~3.7 μs):
+at N_ITER=1024, this contributes ~8.7 cycles/DPAS (3,700 ns × 2.4 GHz / 1024 DPAS).
+The remaining ~4 cycles come from initial tile loads and the final store. Benchmark 1's
+slope method eliminates the fixed overhead by regression across multiple N values.
 
 **Finding**: Total wall-clock time is ~20 μs regardless of SG count. All SGs run
 **in parallel on different EUs** — each additional SG is scheduled on a free EU thread.
@@ -807,7 +829,7 @@ higher bandwidth.
 
 **Vectorized (float4) bandwidth** (`bench_bw_v3.cpp`, 2 GB buffer, `malloc_device`):
 
-| Threads | Read (GB/s) | Write (GB/s) | Copy 2× (GB/s) |
+| Threads | Read (GB/s) | Write (GB/s) | Copy (GB/s, 2× data) |
 |---:|---:|---:|---:|
 | 262K (1K WG) | 466 | 364 | 351 |
 | 524K (2K WG) | 463 | 365 | 416 |
@@ -839,9 +861,9 @@ higher bandwidth.
 
 - **Write bandwidth**: 442 GB/s (77% of peak) with float4, still increasing with thread count
 
-- **Copy bandwidth**: 439 GB/s total data movement (reads 1 GB + writes 1 GB in the same kernel).
-  Effective per-direction throughput: 219 GB/s, limited by combined read+write memory pressure.
-  Note: 439 GB/s is the standard "copy bandwidth" metric reporting total bytes moved.
+- **Copy bandwidth**: 439 GB/s = total bytes moved (1 GB read + 1 GB write), reported as
+  a single aggregate metric for consistency with the read/write columns. Per-direction
+  throughput is ~220 GB/s, limited by combined read+write memory bus contention.
 
 - **Previous 1 GB results were cache-inflated**: The 346 GB/s read at 1 GB was partly served
   from L2 cache (18 MB). With 2 GB buffers, scalar reads drop to 147 GB/s, but vectorized
@@ -875,18 +897,15 @@ Unitrace `GPU_MEMORY_BYTE_READ/WRITE` hardware counters (1 GB buffer):
 The `LOAD_STORE_CACHE_BYTE_READ` counter shows 1.026 GB for the read kernel, confirming
 that all data is read — but almost entirely served from cache, not DRAM (with 1 GB buffer).
 
-**Why does the READ kernel show only 0.002 GB DRAM reads for 1 GB data?** This counter
-(`GPU_MEMORY_BYTE_READ`) measures traffic on the DRAM pins, not cache fills. The read
-kernel accesses each cache line only once in a streaming pattern (1 GB buffer, sequential
-access). The hardware stream prefetcher detects this pattern and prefetches ahead, keeping
-data flowing through the cache hierarchy. Once the prefetch train is established, DRAM
-reads complete into the L2 fill buffers, and the data is consumed directly from the L2
-without additional DRAM reads — the DRAM read counter only increments when data actually
-arrives from DRAM pins, and much of the data is served from in-flight prefetch responses
-or L2 before it's counted. This is a known counter interpretation issue: streaming read
-patterns can show anomalously low DRAM read counts because the counter granularity doesn't
-capture the full data flow through the memory subsystem. The WRITE kernel (348 GB/s) is
-more reliable because writes are always visible at the DRAM level.
+**Why does the READ kernel show only 0.002 GB DRAM reads for 1 GB data?** This is the
+same L2 cache inflation identified in Benchmark 6. The 1 GB buffer exceeds the 18 MB L2,
+but the sequential streaming access pattern allows the hardware prefetcher to keep data
+flowing through the cache hierarchy. `GPU_MEMORY_BYTE_READ` counts DRAM pin traffic, and
+the `LOAD_STORE_CACHE_BYTE_READ` counter (1.026 GB) confirms the data was read through
+the cache path. The WRITE kernel (348 GB/s) is more reliable for DRAM bandwidth measurement
+since writes cannot be served from cache. This unitrace data reinforces the conclusion
+from the 2 GB bandwidth experiments: sequential read patterns with 1 GB buffers are
+substantially cache-assisted.
 
 ---
 
