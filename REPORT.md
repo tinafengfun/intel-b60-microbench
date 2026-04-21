@@ -394,14 +394,23 @@ with filling a 2-stage pipeline.
 **Why ILP=16 is needed instead of ILP=2?**
 
 With a 2-stage pipeline, one might expect ILP=2 to suffice. The reason ILP≈16 is required
-in practice is that **each chain's iteration includes ~220 cycles of loop overhead** beyond
-the 33-cycle DPAS:
+in practice is that **the per-iteration interval far exceeds the 33-cycle DPAS latency**.
+For the ILP Saturation table (N_ITER=64, single SG), the measured 252.8 cycles/iter breaks
+down as:
+
+- Dispatch overhead: 3,700 ns × 2.4 GHz / 64 iters = **~139 cycles/iter** (54% of total)
+- True loop overhead (branch, phi, counter, address calc): **~81 cycles/iter**
+- DPAS execution: **~33 cycles/iter**
+
+The total non-DPAS gap per iteration is ~220 cycles (139 dispatch + 81 loop). While the
+dispatch component scales with N_ITER (e.g., only ~8.7 cycles at N_ITER=1024), the loop
+overhead component (~81 cycles) is the fundamental per-iteration cost with N_ITER=64.
 
 ```
-Single-chain timeline (ILP=1, 252.8 cycles/iter):
-|-- DPAS 33cy --|-- loop overhead ~220cy (branch, phi, counter, addr calc, send.ugm...) --|
-                 ^
-                 XMX is idle during this time
+Single-chain timeline (ILP=1, 252.8 cycles/iter, N_ITER=64):
+|-- DPAS 33cy --|-- dispatch amortized ~139cy --|-- loop ~81cy --|
+                 ^                                                    ^
+                 XMX idle                                     XMX idle
 ```
 
 To keep XMX busy every 16.1 cycles, enough chains must fill the full 252.8-cycle interval:
@@ -435,8 +444,8 @@ peak via sheer parallelism.
 
 **Key implication: loop overhead is the bottleneck, not pipeline depth.**
 
-If the ~220 cycles of loop overhead were eliminated (e.g., fully unrolled loop producing a
-pure DPAS instruction stream in GEN ASM), then:
+If all non-DPAS overhead were eliminated (pure DPAS instruction stream in GEN ASM, no
+dispatch cost), then:
 
 ```
 ILP needed (no overhead) = ⌈33 / 16.1⌉ = 2
@@ -962,9 +971,12 @@ higher bandwidth.
 
 - **Write bandwidth**: 442 GB/s (77% of peak) with float4, still increasing with thread count
 
-- **Copy bandwidth**: 439 GB/s = total bytes moved (1 GB read + 1 GB write), reported as
-  a single aggregate metric for consistency with the read/write columns. Per-direction
-  throughput is ~220 GB/s, limited by combined read+write memory bus contention.
+- **Copy bandwidth**: 439 GB/s is the **aggregate** throughput (1 GB read + 1 GB write
+  in the same kernel), reported as total bytes moved / elapsed time. Note that Read and
+  Write columns measure *unidirectional* throughput (bytes in one direction / time), so
+  Copy's 439 GB/s is not directly comparable to Read's 538 GB/s — the per-direction
+  copy throughput is ~220 GB/s, well below the unidirectional peak, due to read+write
+  memory bus contention.
 
 - **Previous 1 GB results were cache-inflated**: The 346 GB/s read at 1 GB was partly served
   from L2 cache (18 MB). With 2 GB buffers, scalar reads drop to 147 GB/s, but vectorized
