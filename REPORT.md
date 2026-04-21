@@ -114,11 +114,10 @@ dpas.8x8 (16|M0) r28:f r28:f r9:bf r5.0:bf {Compacted,$2}    ; r28→r28 feedbac
 **Linear regression** (slope method):
 ```
 time = overhead + N × per_dpas_time
-slope = 14.34 ns = 34.4 cycles per DPAS
-slope 95% CI = ±1.04 ns = ±2.5 cycles
+slope = 14.34 ns = 34.4 cycles per DPAS (95% CI: 31.9–36.9 cycles)
+slope standard error = 0.52 ns
 intercept = 5,911 ns = 14,186 cycles (fixed dispatch overhead)
 R² = 0.9895
-slope standard error = 0.52 ns
 ```
 
 **Per-N measurement variability** (100 repetitions each):
@@ -136,7 +135,7 @@ the linear model is an excellent fit despite per-run variability.
 
 ### Analysis
 
-- **DPAS BF16 latency ≈ 33-37 cycles** (13-15 ns at 2.4 GHz)
+- **DPAS BF16 latency ≈ 34 ± 3 cycles** (95% CI: 32–37 cycles, 14 ± 1 ns at 2.4 GHz)
 - The naive "cycles per DPAS" decreases with N because the ~6μs fixed overhead
   is amortized. The slope method gives the true per-instruction latency.
 - The DPAS instruction occupies the XMX engine for ~33 cycles. During this time,
@@ -175,18 +174,33 @@ Same as BF16 latency kernel but with `OpTypeFloat 16` (half) replacing `OpTypeIn
 
 ### Results
 
-| N | Median (ns) | Slope latency |
-|---:|---:|---:|
-| 1 | 5,977 | - |
-| 128 | 7,719 | - |
-| 256 | 9,511 | - |
-| **Slope** | - | **14.00 ns = 33.6 cycles** |
+**Full sweep** (8 N-values, 100 repetitions each):
+
+| N | Median (ns) | StdDev (ns) | CV (%) |
+|---:|---:|---:|---:|
+| 1 | 6,075 | 494 | 7.9 |
+| 4 | 5,865 | 500 | 8.4 |
+| 16 | 5,992 | 319 | 5.3 |
+| 32 | 6,298 | 378 | 5.9 |
+| 64 | 6,831 | 288 | 4.2 |
+| 128 | 7,701 | 628 | 8.1 |
+| 256 | 9,505 | 612 | 6.4 |
+| 512 | 12,998 | 573 | 4.4 |
+
+**Linear regression**:
+```
+slope = 13.93 ns = 33.4 cycles per DPAS (95% CI: 32.4–34.4 cycles)
+slope standard error = 0.21 ns
+R² = 0.9987
+```
 
 ### Analysis
 
-- **FP16 DPAS latency ≈ 34 cycles**, essentially identical to BF16
-- This is expected: both use the same XMX hardware path (dpas.8x8 instruction),
-  just with different data interpretation (half vs. ushort bit patterns)
+- **FP16 DPAS latency ≈ 33 ± 1 cycles** (95% CI), essentially identical to BF16 (34 ± 3 cycles)
+- The tighter CI for FP16 (±1 vs ±3 cycles) reflects the higher R² (0.9987 vs 0.9895),
+  likely due to random run-to-run variability rather than a systematic difference
+- Both use the same XMX hardware path (dpas.8x8 instruction), just with different
+  data interpretation (half vs. ushort bit patterns)
 - GEN ASM confirms distinct type suffixes: BF16 uses `:bf`, FP16 uses `:hf`
   - BF16: `dpas.8x8 (16|M0) r28:f r28:f r9:bf r5.0:bf`
   - FP16: `dpas.8x8 (16|M0) r28:f r28:f r9:hf r5.0:hf`
@@ -539,6 +553,13 @@ ILP=1, N_ITER=1024, single work-group with varying SG count:
 | 8 | 20,409 | 6.0 | 0.18× |
 | 16 | 20,411 | 3.0 | 0.09× |
 
+**Note on SG=1 latency**: The 47.0 cycles/DPAS for a single SG with ILP=1 is higher than
+the 34.4 cycles measured in Benchmark 1's regression slope. The difference (47−34 = 13 cycles)
+is the per-iteration loop overhead: branch prediction (OpBranchConditional), counter
+increment (OpIAdd), comparison (OpULessThan), and phi node resolution. Benchmark 1's slope
+method eliminates this by fitting across multiple N values. The 47 cycles here represents
+the raw per-iteration wall time including loop bookkeeping.
+
 **Finding**: Total wall-clock time is ~20 μs regardless of SG count. All SGs run
 **in parallel on different EUs** — each additional SG is scheduled on a free EU thread.
 The cycles/DPAS scales inversely because we divide by total work, but wall time is constant.
@@ -741,14 +762,19 @@ likely due to the compiler's address calculation and barrier code generation.
 - **Practical SLM limit is 64 KB**: Although `maxSharedLocalMemory` reports 128 KB,
   allocations >64 KB fail. The 128 KB SRAM is split: 64 KB for SLM, 64 KB reserved
   for L1 data cache. This is an important constraint for GEMM tiling.
-- **SLM latency growth (46→117 cycles)**: Unlike a traditional scratchpad, Xe2's SLM
-  is not a flat address space — it is banked SRAM with address-dependent access
-  latency. As the working set grows, the random permutation pointer chase exercises
-  more banks, increasing the probability of bank conflicts across the SRAM's internal
-  banking structure. This is analogous to NVIDIA shared memory's bank conflicts, but
-  manifests as gradually increasing latency rather than discrete step functions. The
-  growth pattern (46 at 256B → 117 at 64KB) suggests ~16-32 banks with multi-cycle
-  arbitration when multiple concurrent accesses target the same bank.
+- **SLM latency growth (46→117 cycles)**: Xe2's SLM is implemented as a multi-banked
+  SRAM accessed via `send.slm`. The latency growth with working set size has two likely
+  causes — neither of which is bank conflict (this is a **single-thread** serial
+  dependent chase, so only one access is in-flight at a time):
+  1. **Address decoding and routing overhead**: Larger working sets exercise more banks,
+     and the `send.slm` path may incur additional routing latency when the target address
+     spans many physical banks. This is an address-decode cost, not a conflict.
+  2. **SRAM row/way replacement effects**: Like the L1 data cache, the SLM SRAM has
+     finite associativity. A random permutation pattern maps many virtual addresses to
+     the same SRAM set, causing conflict misses and row activation overhead as the
+     working set grows — analogous to the cache set pressure seen in L1.
+  The growth pattern (46 at 256B → 117 at 64KB) is smoother than L1's (71→145),
+  consistent with the simpler SRAM structure lacking a full tag hierarchy.
 - **Contrast with NVIDIA**: NVIDIA shared memory is a fully separate SRAM with
   ~30 cycle latency and explicit 32-bank architecture. Intel Xe2 SLM at ~46 cycles
   uses a unified SRAM design with `send.slm` path. The banked SRAM behavior is
@@ -813,7 +839,9 @@ higher bandwidth.
 
 - **Write bandwidth**: 442 GB/s (77% of peak) with float4, still increasing with thread count
 
-- **Copy bandwidth**: 439 GB/s (2× bytes) = 219 GB/s (1×) — limited by combined read+write pressure
+- **Copy bandwidth**: 439 GB/s total data movement (reads 1 GB + writes 1 GB in the same kernel).
+  Effective per-direction throughput: 219 GB/s, limited by combined read+write memory pressure.
+  Note: 439 GB/s is the standard "copy bandwidth" metric reporting total bytes moved.
 
 - **Previous 1 GB results were cache-inflated**: The 346 GB/s read at 1 GB was partly served
   from L2 cache (18 MB). With 2 GB buffers, scalar reads drop to 147 GB/s, but vectorized
@@ -846,6 +874,19 @@ Unitrace `GPU_MEMORY_BYTE_READ/WRITE` hardware counters (1 GB buffer):
 
 The `LOAD_STORE_CACHE_BYTE_READ` counter shows 1.026 GB for the read kernel, confirming
 that all data is read — but almost entirely served from cache, not DRAM (with 1 GB buffer).
+
+**Why does the READ kernel show only 0.002 GB DRAM reads for 1 GB data?** This counter
+(`GPU_MEMORY_BYTE_READ`) measures traffic on the DRAM pins, not cache fills. The read
+kernel accesses each cache line only once in a streaming pattern (1 GB buffer, sequential
+access). The hardware stream prefetcher detects this pattern and prefetches ahead, keeping
+data flowing through the cache hierarchy. Once the prefetch train is established, DRAM
+reads complete into the L2 fill buffers, and the data is consumed directly from the L2
+without additional DRAM reads — the DRAM read counter only increments when data actually
+arrives from DRAM pins, and much of the data is served from in-flight prefetch responses
+or L2 before it's counted. This is a known counter interpretation issue: streaming read
+patterns can show anomalously low DRAM read counts because the counter granularity doesn't
+capture the full data flow through the memory subsystem. The WRITE kernel (348 GB/s) is
+more reliable because writes are always visible at the DRAM level.
 
 ---
 
