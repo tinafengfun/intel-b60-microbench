@@ -18,9 +18,9 @@ Writing GPU microbenchmarks on Intel Xe2 requires careful attention to compiler 
 | Xe Cores | 20 | Each has L1 + SLM |
 | XMX Engines | 160 | One per EU, dpas.8x8 |
 | Sub-group Size | 16 threads | vs NVIDIA's 32 (warp) |
-| L1 Data Cache | 128 KB/Xe Core | `send.ugm` path, ~71 cycles |
+| L1 Data Cache | ~128 KB/Xe Core (gradual boundary) | `send.ugm` path, ~71-145 cycles; Level Zero API does not expose L1 |
 | SLM | Up to 64 KB usable/Xe Core | 128 KB SRAM split: 64K SLM + 64K L1 |
-| L2 Cache | 18 MB shared | Per chip, not per core |
+| L2 Cache | 18 MB shared | Confirmed via `zeDeviceGetCacheProperties`; only cache level visible to Level Zero API |
 | GDDR6 | 24 GB, 256-bit bus, ~576 GB/s peak | 18 Gbps data rate |
 | Core Clock | 2.4 GHz | Confirmed via unitrace |
 | DPAS Latency | 33 cycles (BF16/FP16) | Dependent chain slope |
@@ -105,7 +105,45 @@ float* buf = sycl::malloc_device<float>(n, q);
 
 SYCL `local_accessor` generates extra address computation and barrier code, inflating SLM latency from ~46 to ~80 cycles. For precise measurements, use raw SPIR-V.
 
-### 6. Bandwidth Calculation Bug Pattern
+### 6. SPIR-V Bandwidth Stride Bug — Working Set Must Exceed L2
+
+**Problem**: In a coalesced read kernel, if stride per iteration is a small constant (e.g., 256),
+the working set = max_gid + 256*255 ≈ 512 KB, regardless of thread count. This is entirely within
+L2 (18 MB), so all reads hit cache → inflated 1500+ GB/s.
+
+```spirv
+; BAD: stride=256 hardcoded → working set always ~512KB
+%stride = OpIMul %ulong %i_ulong %ulong_256
+%idx = OpIAdd %ulong %gid_x %stride
+```
+
+**Solution**: stride = total_threads (n_wg × wg_size), so working set = total_threads × n_iters × 4 bytes:
+
+```spirv
+; GOOD: stride=total_threads → working set scales with thread count
+%ulong_TOTAL = OpConstant %ulong {total_threads}
+%stride = OpIMul %ulong %i_ulong %ulong_TOTAL
+%idx = OpIAdd %ulong %gid_x %stride
+```
+
+Generate a custom SPIR-V kernel per configuration with the correct stride baked in as a constant.
+Use buffer size ≥ 2GB and working set >> 18 MB L2 for true DRAM measurement.
+
+**Impact**: Old (stride=256): 1574 GB/s (cache). New (stride=total_threads, 1GB working set): ~940 GB/s.
+
+### 7. L1 Data Cache Has No Sharp Boundary
+
+**Problem**: The L1→L2 transition is **gradual** (not a sharp step). Original coarse sweep
+(1-128-192 KB) showed a "step" at 128→192 KB (Δ=17.9 cycles), but fine-grained sweep
+(8 KB steps) reveals continuous growth from 112 cycles at 64KB to 201 cycles at 512KB.
+
+**Finding**: L1 effective capacity is ~128 KB/Xe Core, but the boundary is fuzzy due to
+cache set conflicts increasing gradually. There is no single size where latency jumps sharply.
+
+**Level Zero API**: `zeDeviceGetCacheProperties` only returns L2 (18,432 KB). L1 is not
+queryable through any standard API — must be measured empirically.
+
+### 8. Bandwidth Byte Counting Bug Pattern
 
 **Problem**: When `global_range ≈ buffer_size`, threads overflow the buffer after the first iteration:
 ```cpp
@@ -122,7 +160,7 @@ idx = gid + i * total_threads;
 bytes = n * sizeof(float);  // actual buffer size
 ```
 
-### 7. Latency vs Reciprocal Throughput
+### 9. Latency vs Reciprocal Throughput
 
 - **Latency** = time from instruction issue to result available (33 cycles for DPAS)
 - **Reciprocal throughput** = minimum interval between independent instruction issues (~16 cycles)
@@ -134,7 +172,7 @@ bytes = n * sizeof(float);  // actual buffer size
 89.77 TFLOPS achieved / 160 XMX / 4096 FLOPs / 2.4 GHz = ~16 cycles reciprocal throughput
 ```
 
-### 8. Unitrace Counter Interpretation
+### 10. Unitrace Counter Interpretation
 
 `GPU_MEMORY_BYTE_READ` measures actual DRAM reads, not cache reads. If data is already in L3, the counter will show very low values even though the kernel reads 1 GB through the cache path. Always check `LOAD_STORE_CACHE_BYTE_READ` alongside.
 
@@ -250,53 +288,61 @@ For every microbenchmark:
 
 ## Additional Gotchas
 
-### 9. Scalar vs Vector Memory Access — 3.6× Bandwidth Difference
+### 11. Scalar vs Vector Memory Access — 3.6× Bandwidth Difference
 
 Scalar `float` loads achieve only ~204 GB/s read bandwidth (even with ILP/extra threads).
 Vector `float4` loads achieve **538 GB/s** (93% of 576 GB/s peak). The 2.6× gap is due to
 per-thread memory transaction efficiency. Always use vectorized loads for bandwidth benchmarks.
 
-### 10. XMX Pipeline Saturation Requires ILP≥14
+### 12. XMX Pipeline Saturation Requires ILP≥14
 
 ILP=8 independent DPAS chains within a single sub-group achieve only ~31 cycles/dpas
 (close to 33 cycle latency). But **ILP≥14 saturates the pipeline at ~16 cycles/dpas**,
 matching reciprocal throughput. ILP=16 uses all 256 GRF registers with no spills.
 For GEMM: aim for at least 14 independent DPAS chains per sub-group to maximize XMX utilization.
 
-### 11. L1 Pointer Chase Growth Is NOT TLB
+### 13. L1 Pointer Chase Growth Is NOT TLB
 
 Latency growth from 71→145 cycles in L1 range (1-128 KB) is due to reduced cache line
 utilization with random access patterns, not TLB effects. PAGE_STRIDE test (1 element per
 4KB page) stays flat at ~64 cycles across all sizes, proving TLB is not the bottleneck.
 
-### 12. Host Timing Overhead
+### 14. Host Timing Overhead
 
 Host-side `chrono` timing includes ~6.7 μs submit+wait overhead. For kernels <50 μs,
 use GPU event profiling or the slope method. For kernels >1 ms, host and GPU timing agree within 1%.
 
-### 13. No XMX+ALU Dual-Issue on Xe2
+### 15. No XMX+ALU Dual-Issue on Xe2
 
 Adding 0-16 independent FP32 ALU operations per DPAS iteration has zero impact on cycle count.
 The EU thread is completely blocked during the SBID stall (~33 cycles). Xe2 cannot dual-issue
 XMX and ALU operations. ALU work is "free" only because it executes during the DPAS wait.
 
-### 14. Barriers Can IMPROVE Throughput
+### 16. Barriers Can IMPROVE Throughput
 
 Counter-intuitively, OpControlBarrier every 4-16 iterations **improves** DPAS throughput
 by up to 39% vs no barriers. Without synchronization, SGs compete for shared resources.
 Moderate barriers keep SGs in lockstep, improving XMX scheduling. Cost: only 2-11 cycles
 per barrier (nearly free).
 
-### 15. Cooperative Matrix Reload from Cache Is Free
+### 17. Cooperative Matrix Reload from Cache Is Free
 
 Reloading A/B tiles from cache-resident global memory each iteration costs zero extra cycles
 (and can be slightly faster due to reduced register pressure). The cooperative matrix load
 overlaps with the DPAS SBID stall. GEMM can freely reload operands when data is in L1/L2.
 
-### 16. Per-WG Dispatch Cost Is ~40 ns
+### 18. Per-WG Dispatch Cost Is ~40 ns
 
 Each work-group adds ~40 ns (96 cycles) of scheduling overhead, with a fixed ~3.7 μs
 dispatch latency. Larger WGs (more SGs) amortize this cost: 16 SGs/WG = 2.5 ns/SG.
+
+### 19. Sub-32-bit Scalar Stores Waste Bandwidth (bf16/int8/fp8/int4)
+
+Every global store message has a **minimum 32-bit granularity**. Scalar bf16 stores use
+`store.ugm.d16u32` (16-bit data upscaled to 32-bit message = 50% waste), int8 uses
+`store.ugm.d8u32` (75% waste). **Fix**: pack elements into `vec4_t<T>` (bf16/fp16) or
+`uint32_t` (int8/fp8/int4) before storing. Verified: bf16 vec4 → 3.4× improvement,
+int8 vec4 → 4.6× improvement. See sub-skill `low-bitwidth-writeback` for templates.
 
 ## Tools
 
@@ -308,3 +354,10 @@ dispatch latency. Larger WGs (more SGs) amortize this cost: 16 SGs/WG = 2.5 ns/S
 | `ocloc disasm` | `ocloc disasm -file X.bin -dump dir/ -device bmg-g21` | GEN binary → ASM |
 | `unitrace` | `~/pti-gpu/tools/unitrace/build/unitrace -q -g ComputeBasic` | Hardware counters |
 | `xpu-smi` | `xpu-smi` | Power monitoring, device info |
+
+## Sub-Skills
+
+| Skill File | Description |
+|---|---|
+| `low-bitwidth-writeback.md` | Detection rules and code templates (T1-T5) for packing sub-32-bit stores (bf16/int8/fp8/int4) to avoid bandwidth waste. Verified on BMG-G21. |
+| `low-bitwidth-writeback-en.md` | English version of the above. |

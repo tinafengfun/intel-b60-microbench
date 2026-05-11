@@ -250,3 +250,47 @@ The following cases may be **exempt** from rewriting:
 - Code runs only on the host / debug path
 
 When claiming an exception, the reason must be documented in the PR description or code comments.
+
+---
+
+## Verification Results
+
+### Functional Correctness Tests (BMG-G21 Measured)
+
+Test program: `verify_writeback_skill.cpp`, build command:
+```
+icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -std=c++17 -o verify_writeback_skill verify_writeback_skill.cpp
+```
+
+| Template | Test Description | Result |
+|----------|-----------------|--------|
+| T1 | bf16 elementwise vec4 store (4×bf16 → vec4 writeback) | **PASS** |
+| T2 | bf16 norm vec4 store (weight multiply + vec4 writeback) | **PASS** |
+| T3 | int8 quantize pack→uint32 (4×int8 packed to uint32 writeback) | **PASS** |
+| T4 | fp8-style unpack from uint32 (uint32 load → unpack to float) | **PASS** |
+| T5 | int4 quantize 8×→uint32 (8×4-bit packed to uint32 writeback) | **PASS** |
+| Control | bf16 scalar store (control group, should generate d16u32) | **Compiled OK** (see ASM below) |
+
+### GEN ASM Verification
+
+Store instruction encodings verified independently via SPIR-V microbenchmarks:
+
+| Template | Store Instruction | Encoding | Efficiency |
+|----------|------------------|----------|------------|
+| T1/T2 (bf16 vec4) | `store.ugm.d32x2.a64` | 64-bit | 100% ✅ |
+| T3 (int8→uint32) | `store.ugm.d32.a64` | 32-bit | 100% ✅ |
+| T4 (fp8 from uint32) | `load.ugm.d32.a64` | 32-bit load | 100% ✅ |
+| T5 (int4→uint32) | `store.ugm.d32.a64` | 32-bit | 100% ✅ |
+| Control (bf16 scalar) | `store.ugm.d16u32.a64` | 16-bit→32-bit upscale | 50% ❌ |
+
+### Measured Bandwidth Comparison
+
+| Approach | Copy BW | vs fp32 | Conclusion |
+|----------|---------|---------|-------------|
+| bf16 scalar store | 371 GB/s (SPIR-V) / 198 GB/s (SYCL) | 0.59x / 0.32x | Problem confirmed |
+| bf16 vec4 store (T1/T2) | 754 GB/s (SPIR-V) / 691 GB/s (SYCL) | 1.21x / 1.10x | **Fix effective** |
+| int8 scalar store | 141 GB/s | 0.23x | Problem confirmed |
+| int8 vec4 store (T3) | 652 GB/s | 1.04x | **Fix effective** |
+| fp32 scalar store | 625 GB/s | 1.00x (baseline) | — |
+
+Verified on 2026-05-09, Intel Arc Pro B60 (BMG-G21).

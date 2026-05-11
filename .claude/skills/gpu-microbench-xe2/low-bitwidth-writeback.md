@@ -248,3 +248,47 @@ grep -i "store.*d16u32\|store.*d8u32" disasm/.text.*.asm
 - 仅在 host 端 / debug 路径执行的代码
 
 被判为例外时，必须在 PR 描述或代码注释中说明原因。
+
+---
+
+## 验证结果
+
+### 功能正确性测试（BMG-G21 实测）
+
+测试程序：`verify_writeback_skill.cpp`，编译命令：
+```
+icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -std=c++17 -o verify_writeback_skill verify_writeback_skill.cpp
+```
+
+| 模板 | 测试内容 | 结果 |
+|------|---------|------|
+| T1 | bf16 elementwise vec4 store（4×bf16 → vec4 写回） | **PASS** |
+| T2 | bf16 norm vec4 store（权重乘法 + vec4 写回） | **PASS** |
+| T3 | int8 量化 pack→uint32（4×int8 打包为 uint32 写回） | **PASS** |
+| T4 | fp8 风格 unpack from uint32（uint32 加载 → 解包为 float） | **PASS** |
+| T5 | int4 量化 8×→uint32（8×4-bit 打包为 uint32 写回） | **PASS** |
+| Control | bf16 标量 store（对照组，应生成 d16u32） | **编译通过**（ASM 验证见下） |
+
+### GEN ASM 验证
+
+通过 SPIR-V microbenchmark 独立验证各模板对应的 store 指令编码：
+
+| 模板 | Store 指令 | 编码 | 有效性 |
+|------|-----------|------|--------|
+| T1/T2 (bf16 vec4) | `store.ugm.d32x2.a64` | 64-bit | 100% ✅ |
+| T3 (int8→uint32) | `store.ugm.d32.a64` | 32-bit | 100% ✅ |
+| T4 (fp8 from uint32) | `load.ugm.d32.a64` | 32-bit load | 100% ✅ |
+| T5 (int4→uint32) | `store.ugm.d32.a64` | 32-bit | 100% ✅ |
+| Control (bf16 scalar) | `store.ugm.d16u32.a64` | 16-bit→32-bit upscale | 50% ❌ |
+
+### 带宽实测对比
+
+| 方案 | Copy BW | vs fp32 | 结论 |
+|------|---------|---------|------|
+| bf16 标量 store | 371 GB/s (SPIR-V) / 198 GB/s (SYCL) | 0.59x / 0.32x | 问题确认 |
+| bf16 vec4 store (T1/T2) | 754 GB/s (SPIR-V) / 691 GB/s (SYCL) | 1.21x / 1.10x | **修复有效** |
+| int8 标量 store | 141 GB/s | 0.23x | 问题确认 |
+| int8 vec4 store (T3) | 652 GB/s | 1.04x | **修复有效** |
+| fp32 标量 store | 625 GB/s | 1.00x (baseline) | — |
+
+验证时间：2026-05-09，平台 Intel Arc Pro B60 (BMG-G21)。
