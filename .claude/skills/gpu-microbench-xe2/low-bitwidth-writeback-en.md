@@ -63,8 +63,9 @@ Low-bitwidth kernel has **no** `can_vec` / `is_aligned` / `vectorized` path chec
 ## Code Templates
 
 > The following templates are kernel-level logic snippets meant to be embedded in a
-> `parallel_for` / `nd_range` submission. `malloc_device` returns 8-byte aligned
-> pointers, so `reinterpret_cast` to `vec4_t*` is safe. With other allocation methods,
+> `parallel_for` / `nd_range` submission. `malloc_device` typically returns ≥ 8-byte
+> aligned pointers, so `reinterpret_cast` to `vec4_t*` is safe. With other allocation
+> methods (e.g., `new`/`malloc`), or if you apply a non-aligned offset to the buffer,
 > ensure pointer alignment to `alignof(vec4_t<T>)`.
 
 ### T1. bf16/fp16 Elementwise — vec4 store
@@ -150,6 +151,8 @@ void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
 
 ### T3. int8/uint8 Quantization — pack → uint32
 
+> Note: This template assumes `n` is a multiple of 4. If not, add a scalar tail fallback (see T1).
+
 ```cpp
 void quantize_kernel(int8_t* out_raw, const float* in, int n) {
     int idx = item.get_global_id(0);
@@ -197,6 +200,8 @@ void dequant_fp8_kernel(float* out, const fp8_e4m3* in_raw, int n) {
 
 ### T5. int4 Quantization — pack 8× → uint32
 
+> Note: This template assumes `n` is a multiple of 8. If not, add a scalar tail fallback (see T1).
+
 ```cpp
 void quantize_int4_kernel(uint8_t* out_raw, const float* in, int n) {
     int idx = item.get_global_id(0);
@@ -228,10 +233,15 @@ After rewriting, verify the following:
 
 ### ASM Verification Commands
 ```bash
-# Compile and disassemble
+# Option 1: SYCL AOT compile + disassemble (recommended for most SYCL users)
+icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -o my_kernel my_kernel.cpp
+ocloc disasm -file my_kernel -dump disasm/ -device bmg-g21
+grep -i "store.*d16u32\|store.*d8u32" disasm/.text.*.asm
+
+# Option 2: SPIR-V hand-written assembly path (for precise instruction control)
+spirv-as kernel.spvasm -o kernel.spv --target-env spv1.4
 ocloc compile -spirv_input -file kernel.spv -device bmg-g21 -output kernel
 ocloc disasm -file kernel_bmg.bin -dump disasm/ -device bmg-g21
-# Check: should NOT see d16u32 / d8u32
 grep -i "store.*d16u32\|store.*d8u32" disasm/.text.*.asm
 ```
 
@@ -302,8 +312,8 @@ Store instruction encodings verified independently via SPIR-V microbenchmarks:
 |----------|---------|---------|-------------|
 | bf16 scalar store | 371 GB/s (SPIR-V) / 198 GB/s (SYCL) | 0.59x / 0.32x | Problem confirmed |
 | bf16 vec4 store (T1/T2) | 754 GB/s (SPIR-V) / 691 GB/s (SYCL) | 1.21x / 1.10x | **Fix effective** |
-| int8 scalar store | 141 GB/s | 0.23x | Problem confirmed |
-| int8 vec4 store (T3) | 652 GB/s | 1.04x | **Fix effective** |
+| int8 scalar store | 141 GB/s (SPIR-V only) | 0.23x | Problem confirmed |
+| int8 vec4 store (T3) | 652 GB/s (SPIR-V only) | 1.04x | **Fix effective** |
 | fp32 scalar store | 625 GB/s | 1.00x (baseline) | — |
 
 > **SPIR-V vs SYCL bandwidth gap**: Hand-written SPIR-V directly generates `d16u32` store

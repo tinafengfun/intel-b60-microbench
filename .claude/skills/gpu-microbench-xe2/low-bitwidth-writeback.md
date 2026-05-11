@@ -62,8 +62,8 @@ out_int8[i] = static_cast<int8_t>(quantize(x));  // 逐字节 store ❌
 ## Code Templates
 
 > 以下模板为 kernel 内部逻辑片段，需嵌入 `parallel_for` / `nd_range` 提交。
-> `malloc_device` 返回的指针满足 8-byte 对齐，可直接 `reinterpret_cast` 为 `vec4_t*`。
-> 若使用其他分配方式，需确保指针对齐到 `alignof(vec4_t<T>)`。
+> `malloc_device` 返回的指针通常满足 ≥ 8-byte 对齐，可直接 `reinterpret_cast` 为 `vec4_t*`。
+> 若使用其他分配方式（如 `new`/`malloc`），或对 buffer 做了非对齐偏移，需确保指针对齐到 `alignof(vec4_t<T>)`。
 
 ### T1. bf16/fp16 Elementwise — vec4 store
 
@@ -148,6 +148,8 @@ void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
 
 ### T3. int8/uint8 Quantization — pack → uint32
 
+> 注：本模板假设 `n` 为 4 的倍数。若不满足，需增加 tail 标量 fallback（参见 T1）。
+
 ```cpp
 void quantize_kernel(int8_t* out_raw, const float* in, int n) {
     int idx = item.get_global_id(0);
@@ -195,6 +197,8 @@ void dequant_fp8_kernel(float* out, const fp8_e4m3* in_raw, int n) {
 
 ### T5. int4 Quantization — pack 8× → uint32
 
+> 注：本模板假设 `n` 为 8 的倍数。若不满足，需增加 tail 标量 fallback（参见 T1）。
+
 ```cpp
 void quantize_int4_kernel(uint8_t* out_raw, const float* in, int n) {
     int idx = item.get_global_id(0);
@@ -226,10 +230,15 @@ void quantize_int4_kernel(uint8_t* out_raw, const float* in, int n) {
 
 ### ASM 验证命令
 ```bash
-# 编译并反汇编
+# 方式一：SYCL AOT 编译 + 反汇编（推荐，适用于大多数 SYCL 用户）
+icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -o my_kernel my_kernel.cpp
+ocloc disasm -file my_kernel -dump disasm/ -device bmg-g21
+grep -i "store.*d16u32\|store.*d8u32" disasm/.text.*.asm
+
+# 方式二：SPIR-V 手写汇编路径（适用于 microbenchmark 精确控制）
+spirv-as kernel.spvasm -o kernel.spv --target-env spv1.4
 ocloc compile -spirv_input -file kernel.spv -device bmg-g21 -output kernel
 ocloc disasm -file kernel_bmg.bin -dump disasm/ -device bmg-g21
-# 检查：不应出现 d16u32 / d8u32
 grep -i "store.*d16u32\|store.*d8u32" disasm/.text.*.asm
 ```
 
@@ -299,8 +308,8 @@ icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -std=c++17 -o verify_writeback_
 |------|---------|---------|------|
 | bf16 标量 store | 371 GB/s (SPIR-V) / 198 GB/s (SYCL) | 0.59x / 0.32x | 问题确认 |
 | bf16 vec4 store (T1/T2) | 754 GB/s (SPIR-V) / 691 GB/s (SYCL) | 1.21x / 1.10x | **修复有效** |
-| int8 标量 store | 141 GB/s | 0.23x | 问题确认 |
-| int8 vec4 store (T3) | 652 GB/s | 1.04x | **修复有效** |
+| int8 标量 store | 141 GB/s (SPIR-V only) | 0.23x | 问题确认 |
+| int8 vec4 store (T3) | 652 GB/s (SPIR-V only) | 1.04x | **修复有效** |
 | fp32 标量 store | 625 GB/s | 1.00x (baseline) | — |
 
 > **SPIR-V vs SYCL 带宽差异说明**：SPIR-V 手写汇编直接生成 `d16u32` store 指令，
