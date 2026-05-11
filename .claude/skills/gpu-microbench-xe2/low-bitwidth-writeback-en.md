@@ -11,7 +11,7 @@ This skill is used to:
 2. **Code generation** — Generate correct vectorized store code
 3. **Optimization** — Rewrite existing scalar stores to packed stores
 
-**Verified impact** (measured on BMG-G21):
+**Verified impact** (measured on BMG-G21, copy kernel, 256 MB working set > L2, 4096 WGs × 256 threads):
 - bf16 scalar store: bandwidth is only 0.59x of fp32 (should be 2.0x) → **3.4x performance loss**
 - int8 scalar store: bandwidth is only 0.23x of fp32 (should be 4.0x) → **17x performance loss**
 - After switching to vec4 packed store: bf16 recovers to 1.10x, int8 recovers to 1.04x
@@ -62,6 +62,11 @@ Low-bitwidth kernel has **no** `can_vec` / `is_aligned` / `vectorized` path chec
 
 ## Code Templates
 
+> The following templates are kernel-level logic snippets meant to be embedded in a
+> `parallel_for` / `nd_range` submission. `malloc_device` returns 8-byte aligned
+> pointers, so `reinterpret_cast` to `vec4_t*` is safe. With other allocation methods,
+> ensure pointer alignment to `alignof(vec4_t<T>)`.
+
 ### T1. bf16/fp16 Elementwise — vec4 store
 
 ```cpp
@@ -98,8 +103,8 @@ void elementwise_kernel(scalar_t* out_raw, const scalar_t* in_raw, int n,
         // 3. vec4 store (64-bit) → store.ugm.d32x2
         out[idx] = dst;
 
-    } else {
-        // tail: scalar fallback
+    } else if (idx == n_vec) {
+        // tail: only one thread handles remaining elements
         for (int j = n_vec * 4; j < n; ++j)
             out_raw[j] = compute(in_raw[j]);
     }
@@ -107,6 +112,10 @@ void elementwise_kernel(scalar_t* out_raw, const scalar_t* in_raw, int n,
 ```
 
 ### T2. bf16/fp16 Norm Kernel (RMS Norm example)
+
+> Note: This template only shows the vec4 store pattern on the write side. `inv_rms`
+> must be computed via a sub-group reduction or passed from the host. The full norm
+> reduction step is omitted for brevity.
 
 ```cpp
 void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
@@ -161,7 +170,10 @@ void quantize_kernel(int8_t* out_raw, const float* in, int n) {
 }
 ```
 
-### T4. fp8 Dequantization — pack → uint32
+### T4. fp8 Dequantization — load from uint32 and unpack
+
+> Note: This template shows the **read-side** counterpart — how to efficiently load packed
+> sub-32-bit data (the inverse of T3). It is part of a complete quantize/dequantize pipeline.
 
 ```cpp
 void dequant_fp8_kernel(float* out, const fp8_e4m3* in_raw, int n) {
@@ -172,12 +184,12 @@ void dequant_fp8_kernel(float* out, const fp8_e4m3* in_raw, int n) {
     // Load packed 4×fp8 as uint32
     uint32_t packed = reinterpret_cast<const uint32_t*>(in_raw)[idx];
 
-    // Unpack and dequantize
+    // Unpack and dequantize (bit-shift extraction, no memcpy in device code)
     #pragma unroll
     for (int j = 0; j < 4; ++j) {
-        fp8_e4m3 v;
-        memcpy(&v, &((uint8_t*)&packed)[j], 1);  // extract byte
-        out[idx*4 + j] = fp8_to_float(v);
+        uint8_t byte_val = (packed >> (j * 8)) & 0xFF;
+        float v = fp8_byte_to_float(byte_val);  // custom fp8 decode
+        out[idx*4 + j] = v;
     }
 }
 ```
