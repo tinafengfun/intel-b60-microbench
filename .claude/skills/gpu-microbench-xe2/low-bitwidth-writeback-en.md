@@ -29,6 +29,18 @@ This skill is used to:
 | int8 / uint8 / fp8 | 8 | **vec4 → uint32** | `d32` |
 | int4 / uint4 | 4 | **8× → uint32** | `d32` |
 
+> **vec2 is viable but suboptimal**: bf16 vec2 (32-bit) satisfies the ≥32-bit rule at ~380 GB/s
+> (0.60x), 2× better than scalar but far behind vec4 at 690 GB/s (1.10x). Consider only when
+> n is not a multiple of 4.
+
+## Scope
+
+- **USM mode** (`malloc_device` + raw pointers): Templates apply directly
+- **Buffer/Accessor mode**: Same problem exists (accessor bf16 scalar = 0.32x); use
+  `buf.reinterpret<sycl::vec<T,4>>(range(n/4))` for vec4 packing (verified 1.14x)
+- **Sub-group collective operations** (`sub_group::store`, etc.): Not covered by this skill,
+  but sub-32-bit types may also trigger `d16u32`/`d8u32` — requires separate verification
+
 ---
 
 ## Detection Rules
@@ -78,9 +90,11 @@ struct alignas(sizeof(T) * 4) vec4_t {
     T& operator[](int i) { return v[i]; }
     const T& operator[](int i) const { return v[i]; }
 };
-// bf16 uses uint16_t instead of sycl::ext::oneapi::bfloat16 because:
-// 1) Ensures IGC generates bit-exact d32x2 stores without type conversion overhead
-// 2) sycl::vec<uint16_t,4> verified to produce store.ugm.d32x2.a64 (690 GB/s)
+// bf16 can use uint16_t or sycl::ext::oneapi::bfloat16 — both give identical vec4 performance:
+//   sycl::vec<bfloat16,4>:  689 GB/s (1.10x)    <- native type
+//   sycl::vec<uint16_t,4>:  666 GB/s (1.06x)    <- underlying storage
+//   custom vec4_t<uint16_t>: 663 GB/s (1.06x)   <- this template
+// uint16_t benefit: avoids IGC inserting implicit conversion for bf16 arithmetic
 using vec4_bf16 = vec4_t<uint16_t>;  // bf16 stored as uint16_t
 
 // === Kernel body (embed in parallel_for lambda) ===
@@ -312,9 +326,22 @@ Store instruction encodings verified independently via SPIR-V microbenchmarks:
 |----------|---------|---------|-------------|
 | bf16 scalar store | 371 GB/s (SPIR-V) / 198 GB/s (SYCL) | 0.59x / 0.32x | Problem confirmed |
 | bf16 vec4 store (T1/T2) | 754 GB/s (SPIR-V) / 691 GB/s (SYCL) | 1.21x / 1.10x | **Fix effective** |
+| bf16 vec2 store | 380 GB/s (SYCL) | 0.60x | Partial fix |
 | int8 scalar store | 141 GB/s (SPIR-V only) | 0.23x | Problem confirmed |
 | int8 vec4 store (T3) | 652 GB/s (SPIR-V only) | 1.04x | **Fix effective** |
-| fp32 scalar store | 625 GB/s | 1.00x (baseline) | — |
+| fp32 scalar store | 628 GB/s | 1.00x (baseline) | — |
+
+### SYCL Type Comparison (BMG-G21, GPU event profiling)
+
+| Type Approach | Copy BW | vs fp32 | Notes |
+|--------------|---------|---------|-------|
+| `sycl::ext::oneapi::bfloat16` scalar | 198 GB/s | 0.31x | Same problem |
+| `sycl::vec<bfloat16,4>` vec4 | **689 GB/s** | **1.10x** | Native type + vec4 = fully fixed |
+| `sycl::vec<uint16_t,4>` vec4 | 666 GB/s | 1.06x | Equivalent to custom vec4_t |
+| `vec4_t<uint16_t>` custom | 663 GB/s | 1.06x | Skill default template |
+| `vec2_t<uint16_t>` custom | 380 GB/s | 0.60x | Satisfies ≥32-bit but suboptimal |
+| accessor bf16 scalar | 203 GB/s | 0.32x | Buffer/Accessor has same issue |
+| accessor bf16 vec4 | 718 GB/s | 1.14x | `buf.reinterpret<vec<T,4>>` fix |
 
 > **SPIR-V vs SYCL bandwidth gap**: Hand-written SPIR-V directly generates `d16u32` store
 > instructions. The SYCL compiler (IGC) inserts additional type conversion instructions
@@ -322,4 +349,12 @@ Store instruction encodings verified independently via SPIR-V microbenchmarks:
 > slower (198 vs 371 GB/s). Both paths benefit equally from vec4 packed stores
 > (SPIR-V 754 GB/s, SYCL 691 GB/s).
 
-Verified on 2026-05-09, Intel Arc Pro B60 (BMG-G21).
+Verified on 2026-05-11, Intel Arc Pro B60 (BMG-G21).
+
+## Trigger Keywords
+
+```
+sycl::half, sycl::ext::oneapi::bfloat16, int8_t, uint8_t, fp8, int4,
+store, write, writeback, quantize, dequantize, elementwise,
+low-precision, sub-byte, packed store, vectorized store
+```
