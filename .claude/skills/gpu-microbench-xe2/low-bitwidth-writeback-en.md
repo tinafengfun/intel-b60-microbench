@@ -77,9 +77,12 @@ struct alignas(sizeof(T) * 4) vec4_t {
     T& operator[](int i) { return v[i]; }
     const T& operator[](int i) const { return v[i]; }
 };
+// bf16 uses uint16_t instead of sycl::ext::oneapi::bfloat16 because:
+// 1) Ensures IGC generates bit-exact d32x2 stores without type conversion overhead
+// 2) sycl::vec<uint16_t,4> verified to produce store.ugm.d32x2.a64 (690 GB/s)
 using vec4_bf16 = vec4_t<uint16_t>;  // bf16 stored as uint16_t
 
-// === Kernel: vectorized path ===
+// === Kernel body (embed in parallel_for lambda) ===
 template<typename scalar_t>
 void elementwise_kernel(scalar_t* out_raw, const scalar_t* in_raw, int n,
                         /* compute_fn */) {
@@ -114,12 +117,11 @@ void elementwise_kernel(scalar_t* out_raw, const scalar_t* in_raw, int n,
 ### T2. bf16/fp16 Norm Kernel (RMS Norm example)
 
 > Note: This template only shows the vec4 store pattern on the write side. `inv_rms`
-> must be computed via a sub-group reduction or passed from the host. The full norm
-> reduction step is omitted for brevity.
+> is passed as a kernel parameter (pre-computed via sub-group reduction or host-side).
 
 ```cpp
 void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
-                     int n, float eps) {
+                     int n, float inv_rms) {
     using vec4 = vec4_t<uint16_t>;
     const auto* in = reinterpret_cast<const vec4*>(in_raw);
     const auto* w  = reinterpret_cast<const vec4*>(w_raw);
@@ -134,11 +136,10 @@ void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
     vec4 wt  = w[idx];
     vec4 dst;
 
-    // Compute (elementwise in float)
+    // Compute (elementwise in float, inv_rms passed from outside)
     #pragma unroll
     for (int j = 0; j < 4; ++j) {
         float x = bf16_to_float(src[j]);
-        // ... norm computation ...
         dst[j] = float_to_bf16(x * inv_rms * bf16_to_float(wt[j]));
     }
 
@@ -304,5 +305,11 @@ Store instruction encodings verified independently via SPIR-V microbenchmarks:
 | int8 scalar store | 141 GB/s | 0.23x | Problem confirmed |
 | int8 vec4 store (T3) | 652 GB/s | 1.04x | **Fix effective** |
 | fp32 scalar store | 625 GB/s | 1.00x (baseline) | — |
+
+> **SPIR-V vs SYCL bandwidth gap**: Hand-written SPIR-V directly generates `d16u32` store
+> instructions. The SYCL compiler (IGC) inserts additional type conversion instructions
+> (`mov uw→ud` scatter) and address computation overhead, making bf16 scalar store even
+> slower (198 vs 371 GB/s). Both paths benefit equally from vec4 packed stores
+> (SPIR-V 754 GB/s, SYCL 691 GB/s).
 
 Verified on 2026-05-09, Intel Arc Pro B60 (BMG-G21).

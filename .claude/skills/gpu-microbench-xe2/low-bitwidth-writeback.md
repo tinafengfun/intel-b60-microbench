@@ -75,9 +75,12 @@ struct alignas(sizeof(T) * 4) vec4_t {
     T& operator[](int i) { return v[i]; }
     const T& operator[](int i) const { return v[i]; }
 };
+// bf16 用 uint16_t 而非 sycl::ext::oneapi::bfloat16，原因：
+// 1) 确保 IGC 生成 bit-exact d32x2 store，而非可能插入类型转换指令
+// 2) sycl::vec<uint16_t,4> 已验证生成 store.ugm.d32x2.a64（690 GB/s）
 using vec4_bf16 = vec4_t<uint16_t>;  // bf16 存储为 uint16_t
 
-// === Kernel：vectorized 路径 ===
+// === Kernel body（嵌入 parallel_for 的 lambda 中）===
 template<typename scalar_t>
 void elementwise_kernel(scalar_t* out_raw, const scalar_t* in_raw, int n,
                         /* compute_fn */) {
@@ -111,12 +114,12 @@ void elementwise_kernel(scalar_t* out_raw, const scalar_t* in_raw, int n,
 
 ### T2. bf16/fp16 Norm Kernel（RMS Norm 示例）
 
-> 注：本模板仅展示 store 端的 vec4 写回模式。`inv_rms` 需由 reduction 子群操作或
-> host 端传入，此处省略了完整的 norm reduction 步骤。
+> 注：本模板仅展示 store 端的 vec4 写回模式。`inv_rms` 作为 kernel 参数由外部传入
+> （host 端预计算或由 reduction 子群操作得到）。
 
 ```cpp
 void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
-                     int n, float eps) {
+                     int n, float inv_rms) {
     using vec4 = vec4_t<uint16_t>;
     const auto* in = reinterpret_cast<const vec4*>(in_raw);
     const auto* w  = reinterpret_cast<const vec4*>(w_raw);
@@ -131,11 +134,10 @@ void rms_norm_kernel(bf16* out_raw, const bf16* in_raw, const bf16* w_raw,
     vec4 wt  = w[idx];
     vec4 dst;
 
-    // Compute (elementwise in float)
+    // Compute (elementwise in float, inv_rms 由外部传入)
     #pragma unroll
     for (int j = 0; j < 4; ++j) {
         float x = bf16_to_float(src[j]);
-        // ... norm computation ...
         dst[j] = float_to_bf16(x * inv_rms * bf16_to_float(wt[j]));
     }
 
@@ -300,5 +302,10 @@ icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -std=c++17 -o verify_writeback_
 | int8 标量 store | 141 GB/s | 0.23x | 问题确认 |
 | int8 vec4 store (T3) | 652 GB/s | 1.04x | **修复有效** |
 | fp32 标量 store | 625 GB/s | 1.00x (baseline) | — |
+
+> **SPIR-V vs SYCL 带宽差异说明**：SPIR-V 手写汇编直接生成 `d16u32` store 指令，
+> SYCL 编译器(IGC)可能额外插入类型转换指令（`mov uw→ud` scatter）和地址计算开销，
+> 导致 bf16 标量 store 性能更低（198 vs 371 GB/s）。两种路径的优化方向一致：
+> vec4 packed store 均显著恢复带宽（SPIR-V 754 GB/s，SYCL 691 GB/s）。
 
 验证时间：2026-05-09，平台 Intel Arc Pro B60 (BMG-G21)。
