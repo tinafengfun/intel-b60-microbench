@@ -1,0 +1,6 @@
+variant,elem_bytes,total_threads,n_iters,working_set_mb,median_ns,write_bw_gbps,copy_bw_gbps
+fp32_scalar,4,65536,64,16.0,60154.0,278.9,557.8
+bf16_scalar,2,65536,64,8.0,25982.0,322.9,645.7
+bf16_vec4,8,65536,64,32.0,109060.0,307.7,615.3
+u8_scalar,1,65536,64,4.0,42788.0,98.0,196.1
+u8_vec4,4,65536,64,16.0,45355.0,369.9,739.8
