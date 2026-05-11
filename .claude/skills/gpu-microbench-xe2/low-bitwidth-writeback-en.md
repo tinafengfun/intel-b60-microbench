@@ -173,9 +173,10 @@ void quantize_kernel(int8_t* out_raw, const float* in, int n) {
     int n_pack = n / 4;
     if (idx >= n_pack) return;
 
-    // Load 4 floats
-    float x0 = in[idx*4+0], x1 = in[idx*4+1];
-    float x2 = in[idx*4+2], x3 = in[idx*4+3];
+    // Load 4 floats as vec4 (vectorized load, symmetric with store side)
+    auto in4 = reinterpret_cast<const sycl::vec<float, 4>*>(in);
+    sycl::vec<float, 4> src = in4[idx];
+    float x0 = src.s0(), x1 = src.s1(), x2 = src.s2(), x3 = src.s3();
 
     // Quantize
     int8_t q0 = quantize(x0), q1 = quantize(x1);
@@ -344,17 +345,19 @@ Store instruction encodings verified independently via SPIR-V microbenchmarks:
 | accessor bf16 vec4 | 718 GB/s | 1.14x | `buf.reinterpret<vec<T,4>>` fix |
 
 > **SPIR-V vs SYCL bandwidth gap**: Hand-written SPIR-V directly generates `d16u32` store
-> instructions. The SYCL compiler (IGC) inserts additional type conversion instructions
-> (`mov uw→ud` scatter) and address computation overhead, making bf16 scalar store even
-> slower (198 vs 371 GB/s). Both paths benefit equally from vec4 packed stores
-> (SPIR-V 754 GB/s, SYCL 691 GB/s).
+> instructions. The SYCL compilation chain (icpx frontend + IGC backend) may insert
+> additional type conversions (e.g., bfloat16→float→bfloat16 round-trip) and address
+> computation overhead, making bf16 scalar store even slower (198 vs 371 GB/s).
+> Both paths benefit equally from vec4 packed stores (SPIR-V 754 GB/s, SYCL 691 GB/s).
 
 Verified on 2026-05-11, Intel Arc Pro B60 (BMG-G21).
 
 ## Trigger Keywords
 
+Match condition: **Type keywords ∩ Operation keywords** must both be present (type alone is insufficient to trigger).
+
 ```
-sycl::half, sycl::ext::oneapi::bfloat16, int8_t, uint8_t, fp8, int4,
-store, write, writeback, quantize, dequantize, elementwise,
-low-precision, sub-byte, packed store, vectorized store
+Type keywords: sycl::half, sycl::ext::oneapi::bfloat16, int8_t, uint8_t, fp8, int4
+Operation keywords: store, write, writeback, quantize, dequantize, elementwise
+Additional keywords: low-precision, sub-byte, packed store, vectorized store
 ```

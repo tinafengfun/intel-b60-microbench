@@ -169,9 +169,10 @@ void quantize_kernel(int8_t* out_raw, const float* in, int n) {
     int n_pack = n / 4;
     if (idx >= n_pack) return;
 
-    // Load 4 floats
-    float x0 = in[idx*4+0], x1 = in[idx*4+1];
-    float x2 = in[idx*4+2], x3 = in[idx*4+3];
+    // Load 4 floats as vec4 (向量化 load，与 store 端对称)
+    auto in4 = reinterpret_cast<const sycl::vec<float, 4>*>(in);
+    sycl::vec<float, 4> src = in4[idx];
+    float x0 = src.s0(), x1 = src.s1(), x2 = src.s2(), x3 = src.s3();
 
     // Quantize
     int8_t q0 = quantize(x0), q1 = quantize(x1);
@@ -339,16 +340,18 @@ icpx -fsycl -fsycl-targets=intel_gpu_bmg_g21 -O3 -std=c++17 -o verify_writeback_
 | accessor bf16 vec4 | 718 GB/s | 1.14x | `buf.reinterpret<vec<T,4>>` 修复 |
 
 > **SPIR-V vs SYCL 带宽差异说明**：SPIR-V 手写汇编直接生成 `d16u32` store 指令，
-> SYCL 编译器(IGC)可能额外插入类型转换指令（`mov uw→ud` scatter）和地址计算开销，
-> 导致 bf16 标量 store 性能更低（198 vs 371 GB/s）。两种路径的优化方向一致：
-> vec4 packed store 均显著恢复带宽（SPIR-V 754 GB/s，SYCL 691 GB/s）。
+> SYCL 编译链（icpx 前端 + IGC 后端）可能额外插入类型转换指令（如 bfloat16→float→bfloat16
+> round-trip）和地址计算开销，导致 bf16 标量 store 性能更低（198 vs 371 GB/s）。
+> 两种路径的优化方向一致：vec4 packed store 均显著恢复带宽（SPIR-V 754 GB/s，SYCL 691 GB/s）。
 
 验证时间：2026-05-11，平台 Intel Arc Pro B60 (BMG-G21)。
 
 ## 触发关键词
 
+匹配条件：**类型关键词 ∩ 操作关键词** 同时出现时触发（仅出现类型不足以触发）。
+
 ```
-sycl::half, sycl::ext::oneapi::bfloat16, int8_t, uint8_t, fp8, int4,
-store, write, writeback, quantize, dequantize, elementwise,
-low-precision, sub-byte, packed store, vectorized store
+类型关键词：sycl::half, sycl::ext::oneapi::bfloat16, int8_t, uint8_t, fp8, int4
+操作关键词：store, write, writeback, quantize, dequantize, elementwise
+附加关键词：low-precision, sub-byte, packed store, vectorized store
 ```
