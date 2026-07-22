@@ -27,7 +27,8 @@
    两侧完全吻合,sm_120 家族行为稳定可外推。
 5. **平台差异**:PRO 5000 时钟更高(2.576 vs 2.30 GHz,300W vs 600W 形态),P2P 更快(53.5–54.1 vs 43.9 GB/s),
    但 kernel 启动更慢(3.9–7.0 vs 2.1–2.8 µs,平台/驱动差异);DRAM 读 1230 GB/s(标称 91.5%,ECC 关)
-   vs 6000D 1344(96.1%,ECC 开)。
+   vs 6000D 1344(96.1%,ECC 开)。**8 卡 P2P 全矩阵显示 PRO 5000 节点为 2×4 分组拓扑(跨 NUMA 组间 -26%),
+   6000D 节点 6 卡则完全均匀**——8 卡 TP 部署应约束在 4 卡组内。
 6. **CUDA 13.2 cuBLASLt 新 bug**:fp16 GEMM 在 PRO 5000 上确定性触发 illegal memory access
    (fp32/tf32 正常,torch matmul 正常);tf32 成绩 138 TFLOPS 异常高(=满血 fp16 速率的一半,
    疑似 13.2 把 tf32 映射到了新内核)——两侧软件栈差异已在文中标注。
@@ -90,7 +91,7 @@ SHF 4.44、MUFU_sin 22.1、F2I 45.3、HFMA2 4.44。
 |---|---|---|---|---|
 | cuBLASLt fp32 | 66.1 | 51.8 | 0.78 | 按 SM×clk 缩放 ✓ |
 | cuBLASLt tf32 | 70.3 | **138.0** | 1.96 | 13.2 疑似新内核路径 |
-| cuBLASLt fp16/bf16/int8 | 136–153 | **illegal memory access** | — | **CUDA 13.2 确定性 bug**(fp16_acc32 触发,污染后续所有 case;torch matmul 正常) |
+| cuBLASLt fp16/bf16/int8 | 136–153 | **illegal memory access** | — | **CUDA 13.2 确定性 bug**(fp16_acc32 触发,污染后续所有 case;已在 GPU0 与 GPU2 上两次复现,系统性非单卡问题;torch matmul 正常) |
 | cuBLASLt fp8/fp4 | no algo | (未执行到) | — | 13.0 对 sm_120 无算法,与 6000D 一致预期 |
 | torch matmul bf16 | 未测 | 208.5 | — | 满血速率:208.5e12/(110×2.576e9)= 735 FLOP/clk/SM |
 | torch `_scaled_mm` fp8 | 264.1 | **488.4**(rowwise 480.8) | 1.85 | |
@@ -132,7 +133,12 @@ nvfp4 每 SM·clk:6000D 1817 vs PRO 5000 3093 FLOP(1.70×)——block-scaled 路
 | PCIe H2D / D2H | 56.5 / 57.3 GB/s | 55.3 / 57.4 GB/s |
 | P2P(2 卡) | 43.9 GB/s | **53.5–54.1 GB/s**(+23%) |
 | P2P 延迟 | 7.3 µs | 12.4 µs |
+| P2P 全矩阵 | 6 卡 30 对全部 41.8–44.4(均匀,跨 NUMA 仅 -2%) | **8 卡 56 对呈两组各 4 卡**:组内(0-3 / 4-7,PIX/NODE)53.4–54.4;**跨组(SYS,跨 NUMA)38.4–40.9(-26%)** |
 | NVLink | 无 | 无 |
+
+PRO 5000 节点拓扑(`nvidia-smi topo -m`):GPU0–3 在 NUMA 0、GPU4–7 在 NUMA 1,组内 PIX/NODE、
+跨组必走 SYS——**8 卡 TP 的 all-reduce 会受跨组 39 GB/s 限制**,部署时张量并行应控制在 4 卡一组内。
+6000D 节点 6 卡则无此分层(全矩阵均匀)。
 
 ## 7. 量化/反量化
 
