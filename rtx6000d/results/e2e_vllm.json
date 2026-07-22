@@ -1,0 +1,36 @@
+{
+  "decode_bs1": {
+    "n_prompts": 1,
+    "in_tokens_total": 12,
+    "out_tokens_total": 256,
+    "wall_s": 5.411,
+    "decode_tok_per_s": 47.3,
+    "total_tok_per_s": 49.5
+  },
+  "decode_bs32": {
+    "n_prompts": 32,
+    "in_tokens_total": 406,
+    "out_tokens_total": 8192,
+    "wall_s": 7.961,
+    "decode_tok_per_s": 1029.0,
+    "total_tok_per_s": 1080.0
+  },
+  "prefill_2048_bs1": {
+    "n_prompts": 1,
+    "in_tokens_total": 2048,
+    "out_tokens_total": 1,
+    "wall_s": 0.316,
+    "decode_tok_per_s": 3.2,
+    "total_tok_per_s": 6486.2,
+    "prefill_tok_per_s": 6481.0
+  },
+  "prefill_2048_bs8": {
+    "n_prompts": 8,
+    "in_tokens_total": 16416,
+    "out_tokens_total": 8,
+    "wall_s": 2.415,
+    "decode_tok_per_s": 3.3,
+    "total_tok_per_s": 6799.9,
+    "prefill_tok_per_s": 6797.5
+  }
+}

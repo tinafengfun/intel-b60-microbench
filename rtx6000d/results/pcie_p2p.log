@@ -1,0 +1,11 @@
+# visible devices: 2
+CSV,pcie,H2D_pinned,56.5241,GB/s,
+CSV,pcie,D2H_pinned,57.2957,GB/s,
+CSV,pcie,H2D_pageable,13.8284,GB/s,
+# pciBusID=11 pciDeviceID=0 pciDomainID=0
+CSV,p2p,can_access_0_to_1,1.0000,bool,
+CSV,p2p,can_access_1_to_0,1.0000,bool,
+CSV,p2p,enable_peer,1.0000,bool,
+CSV,p2p,bw_0_to_1,43.9172,GB/s,
+CSV,p2p,bw_1_to_0,43.9460,GB/s,
+CSV,p2p,latency_4KB,7.2640,us,

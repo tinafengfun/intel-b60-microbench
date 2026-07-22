@@ -1,0 +1,28 @@
+CSV,clock,sustained_sm_clock,2.2994,GHz,
+CSV,sched_issue,warps_per_SM_1,24.7172,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_2,49.1411,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_4,98.1990,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_8,115.2050,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_16,116.7122,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_32,115.5493,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_3_fine,50.7565,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_4_fine,98.1990,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_5_fine,72.5436,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_6_fine,86.5183,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_7_fine,100.8878,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_8_fine,115.3195,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_9_fine,83.0400,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_10_fine,92.1982,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_11_fine,101.4933,FFMA/clk/SM,ILP=4
+CSV,sched_issue,warps_per_SM_12_fine,96.0925,FFMA/clk/SM,ILP=4
+CSV,sched_lathide,dep_warps_per_SM_1,6.9032,FFMA/clk/SM,ILP=1 dependent
+CSV,sched_lathide,dep_warps_per_SM_2,13.8459,FFMA/clk/SM,ILP=1 dependent
+CSV,sched_lathide,dep_warps_per_SM_4,27.5601,FFMA/clk/SM,ILP=1 dependent
+CSV,sched_lathide,dep_warps_per_SM_8,53.4931,FFMA/clk/SM,ILP=1 dependent
+CSV,sched_lathide,dep_warps_per_SM_16,94.7750,FFMA/clk/SM,ILP=1 dependent
+CSV,sched_lathide,dep_warps_per_SM_32,104.0427,FFMA/clk/SM,ILP=1 dependent
+CSV,sched_divergence,uniform_ms,0.2566,ms,
+CSV,sched_divergence,divergent_ms,0.2567,ms,
+CSV,sched_divergence,slowdown,1.0005,ratio,half-warp if/else
+CSV,sched_occupancy,resident_blocks_per_SM_1024t,16.0000,blocks,runtime-verified
+CSV,sched_occupancy,resident_warps_per_SM,512.0000,warps,

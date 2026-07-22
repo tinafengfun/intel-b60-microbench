@@ -1,0 +1,7 @@
+CSV,torch_scaled_mm,fp8e4m3_pertensor,264.14,TFLOPS,bf16 out; torch 2.11+cu130 vllm-openai image; M=N=K=8192
+CSV,torch_scaled_mm,fp8e4m3_rowwise,261.09,TFLOPS,bf16 out
+CSV,vllm_cutlass,fp8e4m3_pertensor,261.85,TFLOPS,torch 2.11 image
+CSV,torch_matmul,fp16,134.77,TFLOPS,torch 2.11 image
+CSV,vllm_cutlass,fp8_gemm,254.64,TFLOPS,torch 2.12+cu132 glm52-nvfp4 image
+CSV,vllm_cutlass,nvfp4_gemm,651.55,TFLOPS,nvfp4 block16 e4m3-scale bf16-out; correctness verified rel_diff 0.6% vs dequant-ref
+CSV,nvfp4_correctness,kernel_vs_ref_rel,0.0061,ratio,quant-noise itself 11.3%

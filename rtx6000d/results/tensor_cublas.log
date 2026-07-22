@@ -1,0 +1,10 @@
+CSV,cublas_gemm,fp32,66.1317,TFLOPS,M=N=K=8192 cublasLt Ctype=0
+CSV,cublas_gemm,tf32,70.3149,TFLOPS,M=N=K=8192 cublasLt Ctype=0
+CSV,cublas_gemm,fp16_acc32,136.0620,TFLOPS,M=N=K=8192 cublasLt Ctype=2
+CSV,cublas_gemm,fp16_acc16,152.8179,TFLOPS,M=N=K=8192 cublasLt Ctype=2
+CSV,cublas_gemm,bf16_acc32,134.6675,TFLOPS,M=N=K=8192 cublasLt Ctype=14
+CSV,cublas_gemm,int8_imma,136.2049,TFLOPS,M=N=K=8192 cublasLt Ctype=10
+CSV,cublas_gemm,fp8_e4m3,0.0000,TFLOPS,no algo / not supported on sm_120
+CSV,cublas_gemm,fp8_e5m2,0.0000,TFLOPS,no algo / not supported on sm_120
+CSV,cublas_gemm,fp4_e2m1,0.0000,TFLOPS,no algo / not supported on sm_120
+CSV,cublas_gemm,fp8_e4m3xe5m2,0.0000,TFLOPS,no algo / not supported on sm_120
