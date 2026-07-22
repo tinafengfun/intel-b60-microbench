@@ -370,6 +370,8 @@ FP8 有硬件 cvt(进/出都是全速);**FP4 没有独立 cvt 指令**,软解包
 
 ## 附录:原始数据位置
 
+- 姊妹篇对比:[RTX6000D_vs_B60_comparison.md](RTX6000D_vs_B60_comparison.md)(与本仓库 Intel Arc Pro B60/Xe2 套件的横向对比)
+
 - 源码:`/home/tina/DEV/microbench/src/`(12 个 .cu + bench_common.h + run_all.sh + 4 个 python 框架级/端到端测试:fp8_gemm_test.py / nvfp4_gemm_test.py / nvfp4_check.py / e2e_vllm.py;sched_extra_bench.cu 为 B60 报告对标补充:smem 延迟/barrier 开销/mma+FFMA 交织/启动开销)
 - 原始 CSV:`/home/tina/DEV/microbench/results/*.csv`(含 lowprecision_gemm.csv 框架级结果、e2e_vllm.json 端到端结果、sched_extra.csv 对标补充;远程 `sdf@172.16.120.54:~/microbench/results/` 同步)
 - 复现:`docker run --rm --network=none --gpus '"device=0,3"' -v ~/microbench:/work nvidia/cuda:13.0.1-devel-ubuntu22.04 bash /work/src/run_all.sh all`
