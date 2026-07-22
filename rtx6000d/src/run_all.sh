@@ -17,6 +17,9 @@ build() {
   nvcc -O3 $ARCH_LITE quant.cu -o /work/bin/quant 2>&1 | tail -2
   nvcc -O3 $ARCH_LITE memory_bench.cu -o /work/bin/memory_bench 2>&1 | tail -2
   nvcc -O3 $ARCH_LITE pcie_p2p.cu -o /work/bin/pcie_p2p 2>&1 | tail -2
+  nvcc -O3 $ARCH_LITE mma_probe.cu -o /work/bin/mma_probe 2>&1 | tail -2
+  nvcc -O3 $ARCH_LITE sched_extra_bench.cu -o /work/bin/sched_extra_bench 2>&1 | tail -2
+  nvcc -O3 $ARCH_LITE p2p_matrix.cu -o /work/bin/p2p_matrix 2>&1 | tail -2
   # tcgen05 support probe
   cat > /work/bin/tcgen05_check.cu <<'EOF'
 #include <cstdio>
@@ -61,12 +64,27 @@ run() {
   runone tensor_cublas /work/bin/tensor_cublas
   runone quant /work/bin/quant
   runone memory_bench /work/bin/memory_bench
+  runone mma_probe /work/bin/mma_probe
+  runone sched_extra /work/bin/sched_extra_bench
+  cuobjdump -sass /work/bin/mma_ptx > $logdir/mma_sass.txt 2>&1 || true
+  grep -cE "HMMA|QMMA|OMMA" $logdir/mma_sass.txt || true
   if [ -x /work/bin/tcgen05_check ]; then
     /work/bin/tcgen05_check > $logdir/tcgen05_run.log 2>&1
     cat $logdir/tcgen05_run.log
   fi
   export CUDA_VISIBLE_DEVICES=0,1
   runone pcie_p2p /work/bin/pcie_p2p
+  runone p2p_matrix /work/bin/p2p_matrix
+  # framework-level GEMM tests (only if torch is available in this environment)
+  if python3 -c "import torch" 2>/dev/null; then
+    export CUDA_VISIBLE_DEVICES=0
+    python3 /work/src/fp8_gemm_test.py > $logdir/fp8_gemm.log 2>&1 || true
+    python3 /work/src/nvfp4_gemm_test.py > $logdir/nvfp4_gemm.log 2>&1 || true
+    python3 /work/src/nvfp4_torch_test.py > $logdir/nvfp4_torch.log 2>&1 || true
+    python3 /work/src/nvfp4_check.py > $logdir/nvfp4_check.log 2>&1 || true
+    grep -h '^CSV' $logdir/fp8_gemm.log $logdir/nvfp4_gemm.log $logdir/nvfp4_torch.log $logdir/nvfp4_check.log > $logdir/lowprecision_gemm.csv 2>/dev/null || true
+    tail -2 $logdir/nvfp4_torch.log
+  fi
   nvidia-smi --query-gpu=clocks.sm,clocks.mem,power.draw,temperature.gpu --format=csv,noheader >> $logdir/smi_snapshot.txt 2>&1 || true
   echo "===== RUN DONE ====="
 }

@@ -1,0 +1,6 @@
+# torch 2.12.0a0+0291f960b6.nv26.04.48445190 dev NVIDIA RTX PRO 5000 72GB Blackwell
+Traceback (most recent call last):
+  File "/work/src/nvfp4_torch_test.py", line 27, in <module>
+    a = torch.randn(M, K // 2, device='cuda', dtype=torch.uint8).view(fp4)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+NotImplementedError: "normal_kernel_cuda" not implemented for 'Byte'

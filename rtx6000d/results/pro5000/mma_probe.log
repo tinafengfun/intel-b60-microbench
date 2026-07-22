@@ -1,0 +1,12 @@
+CSV,clock,sustained_sm_clock,2.5765,GHz,
+CSV,mma_probe_fp16,warps_8,288.5985,TFLOPS,ILP=8
+CSV,mma_probe_fp16,warps_16,289.3305,TFLOPS,ILP=8
+CSV,mma_probe_fp16,warps_32,289.4595,TFLOPS,ILP=8
+CSV,mma_probe_fp16,warps_48,289.4211,TFLOPS,ILP=8
+CSV,mma_probe_fp16,ILP_4,289.1658,TFLOPS,32 warps/SM
+CSV,mma_probe_fp16,ILP_8,289.3677,TFLOPS,32 warps/SM
+CSV,mma_probe_fp16,ILP_16,289.2226,TFLOPS,32 warps/SM
+CSV,mma_probe_fp16acc16,ILP_8,289.6118,TFLOPS,f16 accumulator
+CSV,mma_probe_fp16acc16,ILP_16,289.6869,TFLOPS,f16 accumulator
+CSV,mma_probe_fp8e4m3,ILP_16,578.1842,TFLOPS,
+CSV,mma_probe_fp4e2m1,ILP_16,577.2201,TFLOPS,

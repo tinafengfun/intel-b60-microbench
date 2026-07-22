@@ -1,0 +1,86 @@
+CSV,clock,sustained_sm_clock,2.5769,GHz,
+CSV,dram_stream,read,1230.5876,GB/s,
+CSV,dram_stream,write,1205.3680,GB/s,
+CSV,dram_stream,copy,1083.2309,GB/s,r+w
+CSV,dram_stream,triad,1121.2655,GB/s,2r+1w
+CSV,mem_latency,ws_8KB,44.0826,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_8KB,17.1071,ns,
+CSV,mem_latency,ws_16KB,44.1027,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_16KB,17.1149,ns,
+CSV,mem_latency,ws_32KB,44.1430,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_32KB,17.1305,ns,
+CSV,mem_latency,ws_64KB,44.2230,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_64KB,17.1616,ns,
+CSV,mem_latency,ws_128KB,251.8150,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_128KB,97.7215,ns,
+CSV,mem_latency,ws_256KB,327.3554,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_256KB,127.0364,ns,
+CSV,mem_latency,ws_512KB,352.9708,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_512KB,136.9769,ns,
+CSV,mem_latency,ws_1024KB,363.8883,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_1024KB,141.2136,ns,
+CSV,mem_latency,ws_1024KB_ldcg,372.5611,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_2048KB,368.5078,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_2048KB,143.0063,ns,
+CSV,mem_latency,ws_2048KB_ldcg,372.5875,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_4096KB,370.7091,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_4096KB,143.8606,ns,
+CSV,mem_latency,ws_4096KB_ldcg,372.6065,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_8192KB,371.6638,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_8192KB,144.2311,ns,
+CSV,mem_latency,ws_8192KB_ldcg,372.5985,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_16384KB,372.1153,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_16384KB,144.4063,ns,
+CSV,mem_latency,ws_16384KB_ldcg,372.5445,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_32768KB,372.2846,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_32768KB,144.4720,ns,
+CSV,mem_latency,ws_32768KB_ldcg,372.5331,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_65536KB,446.0876,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_65536KB,173.1126,ns,
+CSV,mem_latency,ws_65536KB_ldcg,372.5478,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_131072KB,721.4400,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_131072KB,279.9682,ns,
+CSV,mem_latency,ws_131072KB_ldcg,412.3720,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_262144KB,795.8563,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_262144KB,308.8469,ns,
+CSV,mem_latency,ws_262144KB_ldcg,633.0759,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_524288KB,858.6098,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_524288KB,333.1996,ns,
+CSV,mem_latency,ws_524288KB_ldcg,762.8162,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_1048576KB,890.8570,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_1048576KB,345.7137,ns,
+CSV,mem_latency,ws_1048576KB_ldcg,821.2935,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_2097152KB,906.7370,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_2097152KB,351.8762,ns,
+CSV,mem_latency,ws_2097152KB_ldcg,848.9525,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_4194304KB,916.1410,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_4194304KB,355.5256,ns,
+CSV,mem_latency,ws_4194304KB_ldcg,863.9690,cycles,pointer-chase L2-only
+CSV,mem_latency,ws_8388608KB,919.4841,cycles,pointer-chase L1-enabled
+CSV,mem_latency_ns,ws_8388608KB,356.8229,ns,
+CSV,mem_latency,ws_8388608KB_ldcg,870.4789,cycles,pointer-chase L2-only
+CSV,cache_bw,L1_read,12239.7361,GB/s,256KB per SM, ldca
+CSV,cache_bw,L2_read,5310.7244,GB/s,64MB ldcg
+CSV,shared_bw,no_conflict_read,35893.1878,GB/s,128-bit ld.shared
+CSV,shared_bw,bytes_per_clk_SM,126.6275,B/clk/SM,
+CSV,shared_bw,stride32_conflict_read,1133.8243,GB/s,32-bit ld.shared stride32
+CSV,atomics,global_same_addr,73.4642,Gops/s,
+CSV,atomics,global_spread,470.9188,Gops/s,
+CSV,atomics,shared_same_addr,4179.2816,Gops/s,
+CSV,atomics,shared_spread,4260.2118,Gops/s,
+CSV,tlb_latency,stride_4KB,463.5811,cycles,random touch ldcg
+CSV,tlb_pages,stride_4KB,65536.0000,pages,
+CSV,tlb_latency,stride_16KB,463.1357,cycles,random touch ldcg
+CSV,tlb_pages,stride_16KB,65536.0000,pages,
+CSV,tlb_latency,stride_64KB,458.2383,cycles,random touch ldcg
+CSV,tlb_pages,stride_64KB,32768.0000,pages,
+CSV,tlb_latency,stride_256KB,445.1108,cycles,random touch ldcg
+CSV,tlb_pages,stride_256KB,8192.0000,pages,
+CSV,tlb_latency,stride_1024KB,445.5182,cycles,random touch ldcg
+CSV,tlb_pages,stride_1024KB,2048.0000,pages,
+CSV,tlb_latency,stride_4096KB,446.2300,cycles,random touch ldcg
+CSV,tlb_pages,stride_4096KB,512.0000,pages,
+CSV,tlb_latency,stride_16384KB,446.7879,cycles,random touch ldcg
+CSV,tlb_pages,stride_16384KB,128.0000,pages,
+CSV,tlb_latency,stride_65536KB,451.5938,cycles,random touch ldcg
+CSV,tlb_pages,stride_65536KB,32.0000,pages,

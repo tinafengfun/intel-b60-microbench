@@ -1,0 +1,7 @@
+# torch 2.12.0a0+0291f960b6.nv26.04.48445190 cuda 13.2 dev NVIDIA RTX PRO 5000 72GB Blackwell
+CSV,torch_scaled_mm,fp8e4m3_pertensor,488.44,TFLOPS,bf16 out
+CSV,torch_scaled_mm,fp8e4m3_rowwise,480.82,TFLOPS,bf16 out
+CSV,vllm_cutlass,fp8e4m3,0,TFLOPS,FAIL: No module named 'vllm'
+CSV,torch_matmul,fp16,200.29,TFLOPS,
+CSV,modelopt,present,1,bool,
+CSV,vllm_nvfp4_utils,present,0,bool,No module named 'vllm'

@@ -1,0 +1,27 @@
+CSV,clock,sustained_sm_clock,2.5767,GHz,
+CSV,smem_latency,max_dynamic_shared_per_block,99.0000,KB,optin
+CSV,smem_latency,shared_1KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_2KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_4KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_8KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_16KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_32KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_48KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_64KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,smem_latency,shared_96KB,34.0111,cycles/access,single-thread ptr chase in dynamic shared
+CSV,barrier_overhead,warps_1,5.0000,cycles/barrier,syncthreads minus empty loop
+CSV,barrier_overhead,warps_2,6.5001,cycles/barrier,syncthreads minus empty loop
+CSV,barrier_overhead,warps_4,10.5001,cycles/barrier,syncthreads minus empty loop
+CSV,barrier_overhead,warps_8,14.0562,cycles/barrier,syncthreads minus empty loop
+CSV,barrier_overhead,warps_16,14.4992,cycles/barrier,syncthreads minus empty loop
+CSV,barrier_overhead,warps_32,14.5009,cycles/barrier,syncthreads minus empty loop
+CSV,mma_alu_interleave,ffma_per_mma_0,203.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,mma_alu_interleave,ffma_per_mma_1,203.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,mma_alu_interleave,ffma_per_mma_2,204.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,mma_alu_interleave,ffma_per_mma_4,204.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,mma_alu_interleave,ffma_per_mma_8,206.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,mma_alu_interleave,ffma_per_mma_16,207.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,mma_alu_interleave,ffma_per_mma_32,211.0087,cycles/iter,dependent fp16 mma chain + K indep FFMA
+CSV,launch_overhead,single_launch_us,7.0080,us,event-timed empty kernel
+CSV,launch_overhead,back_to_back_per_launch_us,3.9226,us,2000 launches amortized
+CSV,launch_overhead,full_gpu_empty_per_launch_us,3.7989,us,sm*32 blocks x 256 thr

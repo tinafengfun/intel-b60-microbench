@@ -1,0 +1,3 @@
+ptxas /tmp/tmpxft_000001b1_00000000-6_tcgen05_check.ptx, line 23; error   : Instruction 'tcgen05.alloc' not supported on .target 'sm_120a'
+ptxas /tmp/tmpxft_000001b1_00000000-6_tcgen05_check.ptx, line 23; error   : Feature '.cta_group::1' not supported on .target 'sm_120a'
+ptxas fatal   : Ptx assembly aborted due to errors

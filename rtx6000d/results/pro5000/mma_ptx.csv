@@ -1,0 +1,24 @@
+CSV,clock,sustained_sm_clock,2.5758,GHz,
+CSV,mma_throughput,fp16_m16n8k16,289.3689,TFLOPS,mma.sync ILP=8
+CSV,mma_inst_rate,fp16_m16n8k16,0.2493,mma/clk/SM,
+CSV,mma_latency,fp16_m16n8k16,29.6905,cycles,dependent accumulator
+CSV,mma_throughput,bf16_m16n8k16,289.6014,TFLOPS,mma.sync ILP=8
+CSV,mma_inst_rate,bf16_m16n8k16,0.2495,mma/clk/SM,
+CSV,mma_latency,bf16_m16n8k16,29.6905,cycles,dependent accumulator
+CSV,mma_throughput,tf32_m16n8k8,144.8635,TFLOPS,mma.sync ILP=8
+CSV,mma_inst_rate,tf32_m16n8k8,0.2496,mma/clk/SM,
+CSV,mma_latency,tf32_m16n8k8,29.6905,cycles,dependent accumulator
+CSV,mma_throughput,fp8e4m3_m16n8k32,577.4675,TFLOPS,mma.sync ILP=8
+CSV,mma_inst_rate,fp8e4m3_m16n8k32,0.2488,mma/clk/SM,
+CSV,mma_latency,fp8e4m3_m16n8k32,29.6905,cycles,dependent accumulator
+CSV,mma_throughput,fp8e5m2_m16n8k32,577.6179,TFLOPS,mma.sync ILP=8
+CSV,mma_inst_rate,fp8e5m2_m16n8k32,0.2489,mma/clk/SM,
+CSV,mma_latency,fp8e5m2_m16n8k32,29.6905,cycles,dependent accumulator
+CSV,mma_throughput,fp4e2m1_m16n8k32,577.4004,TFLOPS,mma.sync ILP=8
+CSV,mma_inst_rate,fp4e2m1_m16n8k32,0.2488,mma/clk/SM,
+CSV,mma_latency,fp4e2m1_m16n8k32,29.6905,cycles,dependent accumulator
+CSV,mma_throughput,int8_m16n8k32,577.4259,TOPS,mma.sync ILP=8
+CSV,mma_latency,int8_m16n8k32,27.6906,cycles,
+CSV,dp4a_throughput,dp4a_s8,17972.3647,Ginst/s,
+CSV,dp4a_rate,dp4a_s8,63.4307,inst/clk/SM,
+CSV,dp4a_latency,dp4a_s8,4.4405,cycles,

@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/work/src/nvfp4_gemm_test.py", line 2, in <module>
+    from vllm._custom_ops import cutlass_scaled_fp4_mm
+ModuleNotFoundError: No module named 'vllm'

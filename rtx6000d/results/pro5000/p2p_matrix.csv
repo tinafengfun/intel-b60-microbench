@@ -1,0 +1,2 @@
+CSV,p2p_matrix,gpu0_to_gpu1,53.9598,GB/s,
+CSV,p2p_matrix,gpu1_to_gpu0,53.7072,GB/s,

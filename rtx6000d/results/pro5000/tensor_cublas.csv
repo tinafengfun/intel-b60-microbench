@@ -1,0 +1,10 @@
+CSV,cublas_gemm,fp32,51.7589,TFLOPS,M=N=K=8192 cublasLt Ctype=0
+CSV,cublas_gemm,tf32,137.8730,TFLOPS,M=N=K=8192 cublasLt Ctype=0
+CSV,cublas_gemm,fp16_acc32,0.0000,TFLOPS,an illegal memory access was encountered
+CSV,cublas_gemm,fp16_acc16,0.0000,TFLOPS,alloc failed
+CSV,cublas_gemm,bf16_acc32,0.0000,TFLOPS,alloc failed
+CSV,cublas_gemm,int8_imma,0.0000,TFLOPS,alloc failed
+CSV,cublas_gemm,fp8_e4m3,0.0000,TFLOPS,alloc failed
+CSV,cublas_gemm,fp8_e5m2,0.0000,TFLOPS,alloc failed
+CSV,cublas_gemm,fp4_e2m1,0.0000,TFLOPS,alloc failed
+CSV,cublas_gemm,fp8_e4m3xe5m2,0.0000,TFLOPS,alloc failed
