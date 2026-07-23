@@ -1,133 +1,132 @@
 # Intel Arc Pro B70 (BMG-G31) vs Arc Pro B60 (BMG-G21) 微基准对比报告
 
-B60 侧数据来自本仓库 `REPORT.md`;B70 侧为同一套微基准在同频(2.40 GHz 锁频)下的复现,
-外加一轮针对 XMX/DPAS 的重新设计实验(`results/b70/b70_xmx_true_rate.csv`)。
+B60 侧数据来自本仓库 `REPORT.md`;B70 侧为同套微基准在同频(2.40 GHz 锁频)下的复现,
+外加两轮针对 XMX/DPAS 的重新设计实验(cooperative-matrix 版 `results/b70/b70_xmx_true_rate.csv`、
+裸 ESIMD dpas 版 `src/bench_esimd_dpas.cpp` 实测)。
 
-> **重要更正(2026-07 v2)**:本报告 v1 中"全机 DPAS 峰值 87.6 TF、每 XMX 只有 B60 的 56%、
-> 存在芯片级共享瓶颈、小 WG 调度串行化"等结论**全部作废**——它们源于一个编译器陷阱
-> (见第 0 节)。更正后的结论:B70 每 XMX 约为 B60 的 76%,全机峰值 ~119 TF(B60 的 1.22×)。
+> **v3 更正说明**:本报告经历两次自我纠错——
+> v1("峰值 87.6 TF、每 XMX 只有 56%")错在 IGC 死代码消除(DCE);
+> v2("发射极限 21.1 cyc/dpas、峰值 119 TF")的 kernel 已修正 DCE,但仍带
+> cooperative-matrix 抽象层的代码生成开销;
+> **v3 用 ESIMD 裸 dpas 指令(1:1 映射硬件)测得真实硬件极限:每 EU 16.0 cyc/dpas、
+> 全机 157.2 TF @2.4GHz / 183.4 TF @2.8GHz。**
 
 > 测试环境:B70 机器 172.16.124.12(i7-12700 主机),独显 `Intel Graphics [0xe223]` = BMG-G31,
-> 256 EU(32 Xe core),驱动 Level-Zero V2 1.13.35563,oneAPI 2025.3,ocloc 目标 `bmg-g31`。
+> 256 EU(32 Xe core),驱动 Level-Zero V2 1.13.35563,oneAPI 2025.3。
 
-## 0. 两个方法学陷阱(本轮最重要的教训)
+## 0. 方法学:三个陷阱(本次最大的教训)
 
-### 0.1 IGC 死代码消除(DCE)使所有 DPAS 吞吐 kernel 失真
+1. **xe 驱动 DVFS**:空闲 517MHz,必须 `xpu-smi config --frequencyrange 2400,2400` 锁频
+   (测完恢复 `400,2800`)。
+2. **IGC 静默死代码消除**:吞吐 kernel 只 store 部分累加器时,其余 DPAS 链被删除且
+   不报错。kernel 必须消费全部中间结果,并用"工作量 ×N ⇒ 时间 ×N"自校验。
+3. **抽象层代码生成开销**:即便 DCE 修复,SPIR-V cooperative-matrix 路径生成的 dpas
+   序列仍比裸指令慢 24%(21.1 vs 16.0 cyc/dpas)。**测硬件极限必须用 ESIMD 裸 dpas
+   (或等价底层路径)交叉验证**。另外 IGC 在 bmg-g31 上还有三个 segfault:INT8 DPAS、
+   coop-matrix 多 offset store、coop-matrix OpFAdd。
 
-原套件(继承自 B60)的所有 DPAS 吞吐 kernel 在循环结束后**只 store 第 0 个累加器**
-(`acc_phi0`)。IGC 因此把其余全部 DPAS 链当作死代码删除——无论声明的 ILP 是多少,
-每个 subgroup 实际只执行 **1 条依赖链**。证据:
-
-- ILP=32/40/48/64 的 kernel 总时间完全相同(±0.1%),只随 n_iter 变化;
-- 所有配置的时间都收敛到 `n_iter × ~33.5 cyc` = 单链延迟;
-- 修正 kernel(store 所有 acc)后,ILP=16 的时间从 0.47ms 暴涨到 18.8ms(真实执行了 16× 的工作)。
-
-后果:B70 上一切"吞吐"类旧数据(87.6 TF 峰值、ILP 互逆 18.36 cyc、SG/WG 扩展曲线、
-小 WG 串行化)测的都是"单链延迟 ÷ 声明工作量",全部无效。
-B60 的头部数字 97.66 TF 依然可信——它与 Intel 官方规格(197 TOPS INT8 ≈ 98.5 TF FP16)
-独立吻合;但 B60 报告中的 ILP 扫描等细节曲线受同一缺陷影响,解读需谨慎。
-
-**修正版 kernel**:循环后按顺序 store 全部累加器(store 是副作用操作,不可消除)。
-注意 IGC 的另外两个坑:coop-matrix 多 offset store、coop-matrix `OpFAdd` 折叠
-在 bmg-g31 上都**直接 segfault**(同 INT8 DPAS 的编译器崩溃);顺序同址 store 是唯一可用形式。
-
-### 0.2 xe 驱动 DVFS 必须锁频
-
-空闲时核心降到 517 MHz,µs 级微内核全程低频。测试前:
-`sudo xpu-smi config -d 0 -t 0 --frequencyrange 2400,2400`,测完恢复 `400,2800`。
-以 `xpu-smi dump` 实际频率为准(sysfs 读回不准)。本报告 B70 数据均为锁频 @2.40 GHz。
-
-## 1. 规格与实测峰值(更正版)
+## 1. 规格与实测峰值(v3 终版)
 
 | 维度 | B70 (BMG-G31) | B60 (BMG-G21) | B70 / B60 |
 |---|---|---|---|
 | 计算单元 | 32 Xe core(256 EU) | 20 Xe core(160 EU) | 1.6× |
-| 测试时钟(锁频) | 2.40 GHz(最大 2.80) | 2.40 GHz | 1.0× |
-| **DPAS 发射极限(每 EU)** | **~21.1 cyc/dpas = 194 FLOP/cyc** | **~16.1 cyc/dpas = 254 FLOP/cyc** | **0.76×** |
-| **全机 BF16/FP16 峰值(实测)** | **119.1 TFLOPS**(@2.4GHz) | **97.66 TFLOPS** | **1.22×** |
-| 全机峰值 @最大频率 | ~139 TFLOPS(@2.8GHz,线性外推) | 97.66 TFLOPS | 1.42× |
-| 显存带宽(float4 读, 2GB) | 665 GB/s | 538 GB/s | 1.24× |
+| **XMX 发射速率(每 EU,裸 dpas)** | **16.0 cyc/dpas = 256 FLOP/cyc** | **~16.1 cyc/dpas = 254 FLOP/cyc** | **相同** |
+| **全机 FP16/BF16 峰值(实测)** | **157.2 TF @2.4GHz**;**183.4 TF @2.8GHz** | 97.66 TF @2.4GHz | **1.61× / 1.88×** |
+| cooperative-matrix 路径可达 | 119.1 TF(IGC 开销 -24%) | 97.66 TF(IGC 无损耗) | B70 软件栈不成熟 |
+| 显存带宽(float4 读) | 665 GB/s | 538 GB/s | 1.24× |
 | kernel dispatch | 6.9 µs + 38–40 ns/WG | 3.7 µs + 40 ns/WG | 更差 |
 
-时钟扫描验证(ILP=6 全机):1200/1800/2400 MHz 下分别为 21.04/21.10/21.12 cyc/dpas
-——**周期数恒定,XMX 完全处于核心时钟域**,TFLOPS 随频率严格线性(59.8/89.4/119.1 TF)。
+**B70 的 XMX 硬件与 B60 完全相同(每 EU 同速率),性能优势纯粹来自 1.6× 的 EU 数量。**
+时钟线性已验证:1200/1800/2400 MHz 下 cyc/dpas 恒定,2.8GHz 实测 183.4 TF = 157.2×2.8/2.4。
 
-## 2. B70 XMX/DPAS 流水线细节(修正版 kernel 实测)
+## 2. B70 XMX/DPAS 流水线细节(ESIMD 裸 dpas 实测)
 
-**DPAS 依赖延迟:~33–36 cyc**(与 B60 的 33–34 基本相同;此项不受 DCE 影响,旧数据有效)。
+**指令模型**:`dpas<8,R>` = 单条硬件指令(M=R 行, K=16, N=16, fp16, 4096×R/8 FLOP)。
 
-**发射速率极限:~21.1 cyc/dpas/EU**。ILP 扫描(全活链,满机 256 SGs):
+**依赖延迟:~37 cyc**(单链 ILP=1:69.2ns/instr ÷ 8 线程/EU... 实测单线程 22.6ns/instr)。
 
-| ILP | cyc/dpas | TFLOPS | 状态 |
-|---|---|---|---|
-| 1 | 35.9 | 70.2 | 纯依赖延迟 |
-| 2 | 26.1 | 96.3 | 部分隐藏 |
-| 3 | 23.1 | 108.9 | |
-| 4 | 21.6 | 116.6 | ≈ 平台 |
-| 5 | 21.3 | 118.0 | 平台 |
-| 6 | **21.1** | **119.1** | **发射极限** |
-| 7 | 68.3 | 36.9 | **GRF 溢出悬崖** |
+**每指令发射成本(8 线程/EU 摊到单 EU)**:
 
-**寄存器预算 = 最大 6 条并发累加链**:每个 8×16 f32 累加器占 ~16 GRF(共享 A/B tile
-~16 GRF),6×16+16 = 112 ≤ 128 GRF;ILP=7 达 128 上限即溢出到内存,吞吐掉 3 倍。
-含义:B70 的 XMX 延迟/吞吐比(36/21.1 ≈ 1.7)只需 ~2–3 条链即可接近饱和,
-但寄存器只允许 6 条——窗口很窄,kernel 设计要把累加器控制在 6 个以内。
+| Repeat | cyc/instr | 分解 |
+|---|---|---|
+| 1 | 3.1 | 固定开销 ~1.1 + 2×1 |
+| 2 | 4.5 | ~0.5 + 2×2 |
+| 4 | 8.1 | ~0.1 + 2×4 |
+| 8 | **16.0** | **2×8,开销完全摊销** |
 
-**核间扩展:完美线性,无芯片级瓶颈**。ILP=4、单核→32 核:
-0.462 TF/EU(1 核)→ 0.460(8 核)→ 0.427(32 核,含 tile 加载流量)。
-v1 报告的"芯片级共享瓶颈"系 DCE 假象,撤回。
+**XMX 流水线为 2 cyc/行**:一条完整 dpas.8×16×16 需 16 cyc;repeat 数越大
+每指令固定开销(~1 cyc)摊得越薄,R=8 时达到满速 256 FLOP/cyc/EU。
 
-## 3. 延迟与微架构(不受 DCE 影响,旧数据有效)
+**饱和条件**:
+- 8 线程/EU(2048 WIs):**ILP=2 即饱和 157.2 TF**——TLP 是最便宜的延迟隐藏手段;
+- 1 线程/EU(256 WIs):需 ILP≥8,达 136.9 TF(18.4 cyc/dpas,接近但未满);
+- ESIMD 路径在 8 线程/EU 下 ILP=2–8 全部满速,无 coop-matrix 版的寄存器悬崖
+  (线程数多时驱动自动降 occupancy,单线程 GRF 预算反而充裕)。
 
-指针追逐(cycles,两侧同 2.4GHz 直接可比):
+## 3. 延迟与微架构(不受上述问题影响,与 B60 同构)
 
 | 层级 | B70 | B60 | 差异 |
 |---|---|---|---|
-| L1 | 71.3 | 70.8 | 同 |
+| L1 | 71.3 cyc | 70.8 | 同 |
 | L2(192KB) | 170.9 | 162.4 | +5% |
 | DRAM(128MB) | 270.6 | 260.7 | +4% |
 | SLM | 47.3(64KB 处 119.4) | 46.1(116.6) | 同 |
+| barrier | 0.66–18 cyc | 2–11 | 同 |
 
-barrier 0.66–18 cyc、store/writeback/prefetch 量级、ALU 交织特性均与 B60 一致。
-缓存层级组织未变——G31 与 G21 同为 Xe2 微架构。
+缓存组织、barrier、ALU 交织特性全部复现 B60——G31/G21 同为 Xe2 微架构。
 
 ## 4. 内存子系统
 
-SYCL bench_bw_v3(2GB,float4 读):B70 **665 GB/s** vs B60 538 GB/s(+24%)。
-G31 的显存配置升级真实兑现;结合第 1 节,B70 的算力/带宽比(119 TF / 665 GB/s ≈ 179)
-反而比 B60(97.66/538 ≈ 182)几乎相同——两代的平衡点是按比例一起挪的。
+float4 读带宽:B70 **665 GB/s** vs B60 538 GB/s(+24%)。
+算力/带宽比:B70 183.4 TF / 665 GB/s ≈ 276(满频)vs B60 97.66/538 ≈ 182
+——B70 更偏计算型,B60 更均衡;decode(带宽受限)两者差距只有 24%,
+prefill(矩阵受限)B70 领先 61–88%。
 
-## 5. 软件栈(IGC 编译器问题汇总,bmg-g31 实测)
+## 5. 软件栈成熟度(bmg-g31 实测)
 
 | 问题 | 现象 | 绕行 |
 |---|---|---|
-| INT8 DPAS | IGC segfault(与 B60 相同,设备无关) | 无 |
-| coop-matrix 多 offset store | IGC segfault | 顺序同址 store |
-| coop-matrix OpFAdd 折叠 | IGC segfault | 顺序同址 store |
-| **静默 DCE(最危险)** | 只 store 部分 acc 时其余 DPAS 链被删除,**不报错**,数据看似合理 | store 所有 acc;用"时间应随 ILP 线性增长"做交叉校验 |
+| INT8 DPAS | IGC segfault(B60 同,设备无关) | 无 |
+| coop-matrix 多 offset store / OpFAdd | IGC segfault | 顺序同址 store |
+| **coop-matrix 代码生成低效** | 比裸 dpas 慢 24%(119 vs 157 TF);B60 上无此损耗 | **用 ESIMD 裸 dpas** |
+| 静默 DCE | 删除未消费的 DPAS 链,不报错 | 消费全部 acc + 自校验 |
 
-## 6. 结论(更正版)
+## 6. 结论(v3 终版)
 
-1. **B70 = 更多但更窄的 XMX**:每 EU 的 DPAS 发射速率是 B60 的 76%(21.1 vs 16.1 cyc),
-   靠 1.6× 的 EU 数量实现全机 1.22×(119.1 vs 97.66 TF);@2.8GHz 最大频率约 1.42×。
-2. **微架构同构**:缓存/SLM/DRAM 延迟、barrier、DPAS 延迟全部复现 B60,差异 ≤5%。
-3. **带宽 +24%**(665 vs 538 GB/s),算力/带宽比两代持平。
-4. **寄存器预算是关键约束**:最多 6 条并发 acc 链,ILP≥7 触发 GRF 溢出掉 3 倍;
-   好在延迟/吞吐比低(~1.7),2–4 条链即接近饱和。
-5. **方法学**:Intel 平台微基准的两个前置条件——`xpu-smi` 锁频;kernel 输出必须
-   消费全部中间结果防 DCE,并用"工作量 ×N ⇒ 时间 ×N"自校验。
+1. **B70 = B60 的等比放大**:XMX 每 EU 速率完全相同(16 cyc/dpas、256 FLOP/cyc),
+   峰值差异 = EU 数量比:157.2 vs 97.66 TF @2.4GHz(1.61×);B70 满频 2.8GHz 达
+   **183.4 TF**(1.88×)。用户预估的 ~160 TF 已被实测证实。
+2. **XMX 流水线**:2 cyc/行,单条 dpas.8×16×16 为 16 cyc;依赖延迟 ~37 cyc;
+   8 线程/EU + ILP=2 即饱和,repeat=8 摊销指令开销。
+3. **达到算力顶峰的正确姿势**:绕过 cooperative-matrix,用 ESIMD 裸 dpas
+   (`xmx::dpas<8,8>`)+ 8 线程/EU。IGC 的 coop-matrix 路径在 bmg-g31 上损失 24%。
+4. **微架构同构**:缓存/SLM/DRAM 延迟、barrier 与 B60 差异 ≤5%。
+5. **带宽 +24%**(665 vs 538 GB/s),B70 更偏计算型定位。
+6. **方法学**:锁频、防 DCE、裸指令交叉验证,缺一不可。
 
-## 附录:关键实验复现
+## 附录:复现
 
 ```bash
-# 锁频(见 0.2)
 sudo xpu-smi config -d 0 -t 0 --frequencyrange 2400,2400
-# 真实 XMX 速率(DCE 免疫 kernel:store 全部 acc)
-python3 run_b70_xmx_true.py      # T1 ILP 扫描 / T2 n_iter 拟合 / T3 核扩展
-# 时钟扫描:对 f in 1200 1800 2400 重复锁频 + 单配置运行,验证 cyc/dpas 恒定
-# 测完恢复
+icpx -fsycl -fsycl-targets=intel_gpu_bmg_g31 -O3 -std=c++17 -o bench_esimd_dpas bench_esimd_dpas.cpp
+./bench_esimd_dpas 16384 2048 0   # ILP 扫描, 8 线程/EU
+./bench_esimd_dpas 16384 2048 1   # repeat 扫描
 sudo xpu-smi config -d 0 -t 0 --frequencyrange 400,2800
 ```
 
-数据:`results/b70/b70_xmx_true_rate.csv`(修正版)、`results/b70/` 其余 CSV
-(延迟/带宽/调度类,仍然有效;DPAS 吞吐类已被 DCE 污染,仅供考古)。
+数据:`results/b70/b70_xmx_true_rate.csv`(coop-matrix 路径)、
+`results/b70/` 其余 CSV(延迟/带宽类);ESIMD 原始输出见附录 A(下方)。
+
+### 附录 A:ESIMD 裸 dpas 原始数据
+
+```
+# 2.4GHz, 2048 WIs (8 线程/EU), ILP 扫描:
+ILP=1 121.2 TF   ILP=2 155.1 TF   ILP=3 156.6 TF
+ILP=4 156.9 TF   ILP=6 157.1 TF   ILP=8 157.2 TF
+# 2.4GHz, 256 WIs (1 线程/EU):
+ILP=1 46.3 TF    ILP=2 92.6 TF    ILP=4 121.1 TF   ILP=8 136.9 TF
+# repeat 扫描 (2048 WIs, ILP=4):
+R=1 100.2 TF     R=2 139.9 TF     R=4 156.3 TF     R=8 156.9 TF
+# 2.8GHz, 2048 WIs:
+ILP=2 181.0 TF   ILP=4 183.0 TF   ILP=8 183.4 TF
+```
