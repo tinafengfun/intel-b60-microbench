@@ -110,6 +110,17 @@ int main(int argc, char** argv) {
     ze_kernel_handle_t kernel;
     CHECK_ZE(zeKernelCreate(module, &kernDesc, &kernel));
 
+    // Report kernel properties (register pressure / spill) for microarch analysis
+    {
+        ze_kernel_properties_t kprops = {};
+        kprops.stype = ZE_STRUCTURE_TYPE_KERNEL_PROPERTIES;
+        if (zeKernelGetProperties(kernel, &kprops) == ZE_RESULT_SUCCESS) {
+            fprintf(stderr, "KERNEL_PROPS spillMemSize=%u maxSubgroupSize=%u numKernelArgs=%u requiredSubgroupSize=%u\n",
+                    kprops.spillMemSize, kprops.maxSubgroupSize, kprops.numKernelArgs,
+                    kprops.requiredSubgroupSize);
+        }
+    }
+
     CHECK_ZE(zeKernelSetGroupSize(kernel, wg_x, 1, 1));
     printf("Kernel: %s  WG: %u  Grid: %u  Repeats: %d\n", kern_name, wg_x, nwg_x, repeats);
 
