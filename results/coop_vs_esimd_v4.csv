@@ -1,0 +1,26 @@
+# coop-matrix vs ESIMD gap attribution, B70 (0xe223), 2.4GHz locked, 2026-07-24
+# useful-TF = tile math (2*M*N*K); array-TF = per-thread dpas work (2048 FLOP/instr, deprecated accounting)
+path,config,threads_per_eu,metric,value,unit,note
+esimd_fp16_shared,ILP=1,1,useful_TF,46.3,TF,cyc/dpas_per_thread=54.4
+esimd_fp16_shared,ILP=2,1,useful_TF,92.6,TF,
+esimd_fp16_shared,ILP=3,1,useful_TF,112.5,TF,
+esimd_fp16_shared,ILP=4,1,useful_TF,121.1,TF,cyc/dpas_per_thread=20.8
+esimd_fp16_shared,ILP=6,1,useful_TF,131.2,TF,
+esimd_fp16_shared,ILP=8,1,useful_TF,136.9,TF,cyc/dpas_per_thread=18.4
+esimd_fp16_shared,ILP=2,8,useful_TF,155.1,TF,
+esimd_fp16_shared,ILP=4,8,useful_TF,156.9,TF,16.0 cyc/instr/EU = 256 FLOP/cyc
+esimd_fp16_shared,ILP=8,8,useful_TF,157.2,TF,hardware peak
+esimd_fp16_distinctB,ILP=4,1,useful_TF,99.5,TF,mimics IGC per-chain B copy: -18%
+esimd_fp16_distinctB,ILP=4,8,useful_TF,153.2,TF,-2.4% (hidden by TLP)
+esimd_bf16_shared,ILP=4,1,useful_TF,121.1,TF,bf16 == fp16 rate
+esimd_bf16_shared,ILP=4,8,useful_TF,156.9,TF,
+coop_khr_naive,ILP=2,2,useful_TF,12.4,TF,tile-math; array-accounting was ~8x
+coop_khr_naive,ILP=4,2,useful_TF,15.1,TF,
+coop_khr_naive,ILP=6,2,useful_TF,15.5,TF,best; ILP=7 spills (68 cyc/dpas)
+coop_khr_naive,ILP=4,4,useful_TF,30.1,TF,see report 8.2 caveat on residency
+coop_khr_naive,ILP=4,8,useful_TF,38.4,TF,see report 8.2 caveat on residency
+coop_khr_blocked,rb=2x2,2,useful_TF,11.8,TF,register blocking no help on B70
+coop_khr_blocked,rb=4x4,2,useful_TF,3.5,TF,spillMemSize=3072 (128 GRF hard cap, no 256-GRF mode)
+onemkl_bf16_gemm,4096^3,-,useful_TF,146.9,TF,2MNK/t real
+onemkl_bf16_gemm,8192^3,-,useful_TF,153.7,TF,98% of peak
+numerical_probe,A=B=1.0,1,delta_per_run,16.0,FLOP-element,collective mad = one true 8x16 tile (4096 FLOP/SG)

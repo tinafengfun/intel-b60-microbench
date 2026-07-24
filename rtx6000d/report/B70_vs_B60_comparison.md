@@ -4,12 +4,22 @@ B60 侧数据来自本仓库 `REPORT.md`;B70 侧为同套微基准在同频(2.40
 外加两轮针对 XMX/DPAS 的重新设计实验(cooperative-matrix 版 `results/b70/b70_xmx_true_rate.csv`、
 裸 ESIMD dpas 版 `src/bench_esimd_dpas.cpp` 实测)。
 
+> **v4 更正说明(2026-07-24)**:v3 的"coop-matrix 路径 119 TF(IGC 开销 -24%)"结论
+> 再次被推翻——这次错在**记账口径**:旧 coop 微基准把每线程 dpas 的**阵列工作**
+> (2048 FLOP/指令)当作有用 FLOP 记账。数值探针证实:KHR SG16 的 8×16×16 mad
+> 集体只做 4096 有用 FLOP(每线程 256),但 IGC 把它 lowering 成每线程一整条
+> dpas.8x8(N=8,2048 FLOP 阵列工作)——**阵列工作的 7/8 是冗余的**。
+> naive 单 tile coop 路径真实有用吞吐 ≈ **15.5 TF**(2 WI/EU),而非 119 TF;
+> 与 ESIMD 裸 dpas(157.2 TF)的真实差距是 **~8×(有用 FLOP/指令比)**,不是 24%。
+> oneMKL bf16 GEMM 实测 153.7 TF(8192³),与 ESIMD 互证硬件真实水平。详见第 8 章。
+>
 > **v3 更正说明**:本报告经历两次自我纠错——
 > v1("峰值 87.6 TF、每 XMX 只有 56%")错在 IGC 死代码消除(DCE);
 > v2("发射极限 21.1 cyc/dpas、峰值 119 TF")的 kernel 已修正 DCE,但仍带
 > cooperative-matrix 抽象层的代码生成开销;
 > **v3 用 ESIMD 裸 dpas 指令(1:1 映射硬件)测得真实硬件极限:每 EU 16.0 cyc/dpas、
-> 全机 157.2 TF @2.4GHz / 183.4 TF @2.8GHz。**
+> 全机 157.2 TF @2.4GHz / 183.4 TF @2.8GHz。**(v3 的硬件极限数字仍然成立;
+> 被更正的是它对 coop 路径差距的解读。)
 
 > 测试环境:B70 机器 172.16.124.12(i7-12700 主机),独显 `Intel Graphics [0xe223]` = BMG-G31,
 > 256 EU(32 Xe core),驱动 Level-Zero V2 1.13.35563,oneAPI 2025.3。
@@ -20,10 +30,12 @@ B60 侧数据来自本仓库 `REPORT.md`;B70 侧为同套微基准在同频(2.40
    (测完恢复 `400,2800`)。
 2. **IGC 静默死代码消除**:吞吐 kernel 只 store 部分累加器时,其余 DPAS 链被删除且
    不报错。kernel 必须消费全部中间结果,并用"工作量 ×N ⇒ 时间 ×N"自校验。
-3. **抽象层代码生成开销**:即便 DCE 修复,SPIR-V cooperative-matrix 路径生成的 dpas
-   序列仍比裸指令慢 24%(21.1 vs 16.0 cyc/dpas)。**测硬件极限必须用 ESIMD 裸 dpas
-   (或等价底层路径)交叉验证**。另外 IGC 在 bmg-g31 上还有三个 segfault:INT8 DPAS、
-   coop-matrix 多 offset store、coop-matrix OpFAdd。
+3. **抽象层 lowering 决定了"有用 FLOP/指令"**:SPIR-V cooperative-matrix(KHR)单 tile
+   路径的每条 dpas 只有 1/8 阵列工作是有用的(详见第 8 章),旧记账把阵列工作当有用,
+   得出"慢 24%"的错误结论;真实差距是 ~8×。**测硬件极限必须用 ESIMD 裸 dpas
+   (或等价底层路径,如 oneMKL JIT kernel)交叉验证**;评价 coop 路径必须按
+   tile 数学(2·M·N·K)记有用 FLOP,并用数值探针验证正确性。另外 IGC 在 bmg-g31
+   上还有三个 segfault:INT8 DPAS、coop-matrix 多 offset store、coop-matrix OpFAdd。
 
 ## 1. 规格与实测峰值(v3 终版)
 
@@ -32,7 +44,8 @@ B60 侧数据来自本仓库 `REPORT.md`;B70 侧为同套微基准在同频(2.40
 | 计算单元 | 32 Xe core(256 EU) | 20 Xe core(160 EU) | 1.6× |
 | **XMX 发射速率(每 EU,裸 dpas)** | **16.0 cyc/dpas = 256 FLOP/cyc** | **~16.1 cyc/dpas = 254 FLOP/cyc** | **相同** |
 | **全机 FP16/BF16 峰值(实测)** | **157.2 TF @2.4GHz**;**183.4 TF @2.8GHz** | 97.66 TF @2.4GHz | **1.61× / 1.88×** |
-| cooperative-matrix 路径可达 | 119.1 TF(IGC 开销 -24%) | 97.66 TF(IGC 无损耗) | B70 软件栈不成熟 |
+| cooperative-matrix(naive 单 tile)有用吞吐 | **≈15.5 TF**(阵列工作口径曾记 119 TF,v4 更正) | 微基准同口径 ~12 TF;**register-blocked GEMM 89.77 TF 实测(2MNK,92% 峰值)** | B70 缺 256-GRF 模式,register-blocked 补救路径走不通(见第 8 章) |
+| oneMKL bf16 GEMM(真实库) | **153.7 TF**(8192³,98% 峰值) | ~95 TF(oneDNN 估计) | 1.6×,与 EU 数一致 |
 | 显存带宽(float4 读) | 665 GB/s | 538 GB/s | 1.24× |
 | kernel dispatch | 6.9 µs + 38–40 ns/WG | 3.7 µs + 40 ns/WG | 更差 |
 
@@ -146,6 +159,98 @@ slot 序列即真实分发顺序(`src/bench_dispatch_order.cpp`,64×64 网格):
 以上为间接证据,非证伪:缺 VTune/zet 硬件计数器(本机 xpu-smi 的内存读计数器
 返回 0,EU active 为 N/A),无法直接读出 L2 命中率或寄存器分配配置。
 最终确认需 Intel BMG-G31 PRM 或 VTune GPU 计数器。
+
+## 8. coop-matrix vs ESIMD:TFLOPS 差距的完整归因(v4 新增)
+
+问题:同一块 B70,joint_matrix(cooperative-matrix)GEMM 路径与 ESIMD 裸 dpas 路径的
+TFLOPS 为什么差这么多?是编译器、IR 分层、调度,还是硬件?
+
+**结论:根源在编译器后端(IGC)把 CooperativeMatrixKHR lowering 到 XMX 指令的方式,
+具体是"有用 FLOP/指令"比例;不是 ISA、不是线程调度、不是数据类型。**
+
+### 8.1 三条独立证据链
+
+**证据一:反汇编(ocloc disasm,bmg-g31)。** 两条路径的循环体都是纯 `dpas.8x8` 流,
+无 mov 风暴、无多余 sync,SWSB 结构相同——**ISA 指令流不是差距来源**。差异在操作数:
+
+| | coop KHR(`gen_kernel_live`, ILP=4) | ESIMD(`bench_esimd_dpas`, ILP=4) |
+|---|---|---|
+| 每链操作数 | **每链独立 A、B 副本**(~24 GRF/链:acc 8 + A 8 + B 8) | 4 链**共享**同一 A、B |
+| acc 寄存器 | 8 GRF/链/线程(64 float 计算量,**仅 8 float 有用**) | 16 GRF/链/线程(128 float,**全有用**) |
+| 每线程每指令 | N=8,2048 FLOP 阵列工作,**256 FLOP 有用** | N=16,4096 FLOP 阵列工作,**4096 FLOP 全有用** |
+
+**证据二:数值探针(`num_probe.py`)。** A、B 全填 bf16 1.0,C 填 ramp:
+kernel 每执行一次,输出 tile 每个元素恰好 +16.0(= 一次真实的 8×16×16 mad)。
+证明 KHR mad 的集体语义 = 4096 有用 FLOP/ SG——lowering 没有"藏"额外有用计算,
+每线程 64 float 的指令输出里只有 8 float 进入最终 tile,**冗余度 8×**。
+
+**证据三:oneMKL 锚点(`mkl_gemm.cpp`)。** oneMKL bf16 GEMM 8192³ 实测
+**153.7 TF**(2MNK/t,真实有用)= 256 FLOP/cyc/EU 的 98%。与 ESIMD 微基准
+(157.2 TF)互证:**硬件没问题,接近峰值是可达的**——前提是每线程拥有私有
+8×16 输出块,使每条 dpas 的阵列工作全部有用。
+
+### 8.2 量化对照(2.4 GHz 锁频,有用 FLOP 口径)
+
+| 路径 | 每指令有用 FLOP(每线程) | 实测有用 TF | 占硬件峰值 |
+|---|---|---|---|
+| ESIMD 裸 dpas(8 WI/EU, ILP≥2) | 4096(全有用) | **157.2** | ~100% |
+| oneMKL bf16 GEMM 8192³ | (JIT kernel,全有用) | **153.7** | 98% |
+| coop KHR naive 单 tile 链(2 WI/EU, ILP=6 最优) | 256(1/8 有用) | **15.5** | ~10% |
+| coop KHR 理论天花板(阵列打满) | 256 | ~19.6 | 12.5% |
+| (旧报告记账口径:阵列工作当有用) | 2048 | "119 TF" | 口径错误,作废 |
+
+### 8.3 次要因素(真实存在,但不是主因)
+
+1. **操作数逐链复制 → 寄存器压力**:IGC 给 coop 每条累加链独立复制 A/B tile,
+   而 ESIMD 手写版共享。ESIMD 模拟"独立 B 副本"(bench mode 2)实测:
+   1 WI/EU 时 20.8→25.3 cyc/dpas(**-18%**),8 WI/EU 时仅 -2.4%(多线程掩盖)。
+2. **ILP 上限**:coop 每链 24 GRF → ILP=7 即 spill 崩塌(21→68 cyc/dpas);
+   ESIMD 共享操作数,ILP=8 仍正常。coop 最优只到 ILP=6。
+3. **bf16 vs fp16:已排除**。bench mode 3 实测 bf16 与 fp16 完全同速
+   (121.1 TF @ 1 WI/EU ILP=4,两者一致);coop asm 的 `:bf` 操作数不是性能因素。
+
+### 8.4 为什么 B60 的 joint_matrix GEMM 能到 92% 峰值,而 B70 不行?
+
+B60 报告中的 89.77 TF GEMM(`gemm_v20_best.cpp`)是真实有用吞吐(2MNK 实测),
+关键在两点:
+
+- **Register blocking**:每个 SG 拥有 4×4 = 16 个 8×16 tile(32×64 输出块),
+  IGC 可以把 tile 重打包,使每线程的每条 dpas 落在一个完整有用的 8×8 块上
+  (16 线程 × 2 块 × 64 float = 2048 = 32×64,零冗余)。
+- **256-GRF 模式**(`-cl-intel-256-GRF-per-thread`):寄存器预算翻倍,16 个
+  acc tile + 共享 A/B 才放得下。
+
+在 B70 上复现该结构(`coop_blocked.py`):**rb=4(4×4)直接 spill**
+(spillMemSize=3072,有用吞吐反而掉到 3.5 TF);rb=2 为 11.8 TF,不比 naive 好。
+原因与第 7.2 节的 VRT 探测一致:**B70 的 128 GRF/线程是硬顶,256-GRF 模式在
+bmg-g31 上不可用**,register-blocked coop 补救路径目前走不通。
+(B60 微基准的"97.66 TF 原始 XMX 吞吐"与 B70 的"119 TF"是同一记账口径,
+同样应视为阵列工作口径;B60 的 89.77 TF GEMM 是 2MNK 实测,真实有效。)
+
+### 8.5 实践建议
+
+1. B70 上要打满 XMX:用 **ESIMD 裸 dpas**(或 oneMKL),每线程私有 8×16 acc tile、
+   多链共享 A/B 操作数,8 线程/EU + ILP≥2 即饱和(157 TF)。
+2. 不要对 bmg-g31 的 naive KHR joint_matrix 路径抱性能预期(有用吞吐 ~1/8);
+   需要 cooperative matrix 语义时,关注 IGC 后端是否修复 per-thread 打包。
+3. 评价任何 XMX 微基准:先分清"阵列工作口径"与"有用 FLOP 口径",
+   再用数值探针验证 kernel 真的在做你以为的计算。
+
+### 8.6 复现
+
+```bash
+# ESIMD 对照(bench_esimd_dpas.cpp,新 mode 2/3)
+./bench_esimd_dpas 16384 256 2    # 独立 B 副本 ILP=4 -> 99.5 TF (vs 共享 121.1)
+./bench_esimd_dpas 16384 2048 2   # 8WI/EU            -> 153.2 TF (vs 共享 156.9)
+./bench_esimd_dpas 16384 256 3    # bf16 对照          -> 121.1 TF (= fp16)
+# coop 干净对拍(bench_coop_dpas_v2.cpp 需 oneAPI ≤2025.2 运行时;SPIR-V 路径用 coop_8wi.py)
+python3 coop_8wi.py               # gen_kernel_live ILP×occupancy 扫描
+python3 coop_blocked.py           # register-blocked rb=2/4(验证 8.4)
+python3 num_probe.py              # 数值探针:每次运行输出 tile +16.0
+./mkl_gemm 8192                   # oneMKL 锚点 -> 153.7 TF
+```
+
+数据:`results/b70/coop_vs_esimd_v4.csv`。
 
 ## 附录:复现
 
