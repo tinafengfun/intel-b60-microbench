@@ -44,6 +44,8 @@ B60 侧数据来自本仓库 `REPORT.md`;B70 侧为同套微基准在同频(2.40
 | 计算单元 | 32 Xe core(256 EU) | 20 Xe core(160 EU) | 1.6× |
 | **XMX 发射速率(每 EU,裸 dpas)** | **16.0 cyc/dpas = 256 FLOP/cyc** | **~16.1 cyc/dpas = 254 FLOP/cyc** | **相同** |
 | **全机 FP16/BF16 峰值(实测)** | **157.2 TF @2.4GHz**;**183.4 TF @2.8GHz** | 97.66 TF @2.4GHz | **1.61× / 1.88×** |
+| **全机 INT8 峰值(ESIMD 裸 dpas)** | **314.4 TOPS @2.4GHz**(512 OP/cyc/EU,恰好 2× FP16);~367 TOPS @2.8GHz | 197 TOPS(spec) | 1.6× |
+| oneMKL s8 GEMM(真实库) | **298.2 TOPS**(8192³,95% 峰值,C0 数值校验通过) | — | — |
 | cooperative-matrix(naive 单 tile)有用吞吐 | **≈15.5 TF**(阵列工作口径曾记 119 TF,v4 更正) | 微基准同口径 ~12 TF;**register-blocked GEMM 89.77 TF 实测(2MNK,92% 峰值)** | B70 缺 256-GRF 模式,register-blocked 补救路径走不通(见第 8 章) |
 | oneMKL bf16 GEMM(真实库) | **153.7 TF**(8192³,98% 峰值) | ~95 TF(oneDNN 估计) | 1.6×,与 EU 数一致 |
 | 显存带宽(float4 读) | 665 GB/s | 538 GB/s | 1.24× |
@@ -236,18 +238,51 @@ bmg-g31 上不可用**,register-blocked coop 补救路径目前走不通。
 3. 评价任何 XMX 微基准:先分清"阵列工作口径"与"有用 FLOP 口径",
    再用数值探针验证 kernel 真的在做你以为的计算。
 
-### 8.6 复现
+### 8.6 INT8 峰值与 Level-Zero SPIR-V 路径(2026-07-24 补测)
+
+**问题**:能否从 Level-Zero 的 SPIR-V 接口(`zeModuleCreate` + `ZE_MODULE_FORMAT_IL`)
+角度榨干算力,做 INT8 GEMM 峰值测试?
+
+**答案:API 只是投递方式,JIT 仍是同一个 IGC——榨干算力的关键仍是 lowering 路径选择,
+不是从哪个 API 入口加载。** 本项目的 SPIR-V 流程(spirv-as → ocloc 离线编译 →
+L0 `zeModuleCreate` 加载 native binary)与直接给 L0 喂 SPIR-V IL(驱动内 JIT)在
+代码生成上完全等价。INT8 的具体障碍:bmg-g31 上 **coop-matrix INT8 DPAS 会 segfault
+IGC**(第 0 章三个 IGC 崩溃之一),SPIR-V KHR 路径走不通;**ESIMD 裸 dpas 支持
+u8/s8,是唯一干净路径**。
+
+**实测结果(2.4 GHz 锁频,`bench_esimd_dpas` mode 4,`xmx::dpas<8,8,int>` + u8)**:
+
+| 配置 | TOPS | 说明 |
+|---|---|---|
+| 8 WI/EU, ILP=8 | **314.4** | = 512 OP/cyc/EU,**恰好 2× FP16 峰值**,硬件 INT8 满速 |
+| 8 WI/EU, ILP=4 | 313.8 | 同 fp16,ILP=2 即接近饱和(310.2) |
+| 1 WI/EU, ILP=8 | 273.9 | 与 fp16 的 136.9 TF 严格 2× 对应 |
+
+每指令耗时与 fp16 **逐点相同**(53.36 ns/instr @8WI/EU)——XMX 在 INT8 下每周期做
+2× 操作(K=32 vs 16),发射速率不变。数值校验:c0 累积值 = 7 次 repeat × 16384 迭代
+× K=32 全 1 乘加,分毫不差(顺带解释了此前 fp16 c0 的"7×"——跨 repeat 累积,
+不是计算错误)。
+
+**oneMKL s8 GEMM 锚点**(`mkl_gemm_s8.cpp`,gemm_s8s8s32):8192³ 实测
+**298.2 TOPS**(94.8% 峰值),C0 = 16384 数值正确。
+
+**结论**:B70 INT8 算力 = **314 TOPS @2.4GHz / ~367 TOPS @2.8GHz**(线性外推),
+是 FP16/BF16 的严格 2×;INT8 GEMM 用 oneMKL 即可到 95% 峰值,无需手写 kernel。
+
+### 8.7 复现
 
 ```bash
 # ESIMD 对照(bench_esimd_dpas.cpp,新 mode 2/3)
 ./bench_esimd_dpas 16384 256 2    # 独立 B 副本 ILP=4 -> 99.5 TF (vs 共享 121.1)
 ./bench_esimd_dpas 16384 2048 2   # 8WI/EU            -> 153.2 TF (vs 共享 156.9)
 ./bench_esimd_dpas 16384 256 3    # bf16 对照          -> 121.1 TF (= fp16)
+./bench_esimd_dpas 16384 2048 4   # INT8 u8 ILP 扫描   -> 314.4 TOPS @ILP=8
 # coop 干净对拍(bench_coop_dpas_v2.cpp 需 oneAPI ≤2025.2 运行时;SPIR-V 路径用 coop_8wi.py)
 python3 coop_8wi.py               # gen_kernel_live ILP×occupancy 扫描
 python3 coop_blocked.py           # register-blocked rb=2/4(验证 8.4)
 python3 num_probe.py              # 数值探针:每次运行输出 tile +16.0
-./mkl_gemm 8192                   # oneMKL 锚点 -> 153.7 TF
+./mkl_gemm 8192                   # oneMKL bf16 锚点 -> 153.7 TF
+./mkl_gemm_s8 8192                # oneMKL s8 锚点  -> 298.2 TOPS
 ```
 
 数据:`results/b70/coop_vs_esimd_v4.csv`。

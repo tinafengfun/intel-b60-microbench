@@ -24,3 +24,8 @@ coop_khr_blocked,rb=4x4,2,useful_TF,3.5,TF,spillMemSize=3072 (128 GRF hard cap, 
 onemkl_bf16_gemm,4096^3,-,useful_TF,146.9,TF,2MNK/t real
 onemkl_bf16_gemm,8192^3,-,useful_TF,153.7,TF,98% of peak
 numerical_probe,A=B=1.0,1,delta_per_run,16.0,FLOP-element,collective mad = one true 8x16 tile (4096 FLOP/SG)
+esimd_int8_u8,ILP=8,1,useful_TOPS,273.9,TOPS,int8 K=32, 2x fp16 per instr
+esimd_int8_u8,ILP=2,8,useful_TOPS,310.2,TOPS,
+esimd_int8_u8,ILP=4,8,useful_TOPS,313.8,TOPS,
+esimd_int8_u8,ILP=8,8,useful_TOPS,314.4,TOPS,512 OP/cyc/EU = 2x fp16 peak
+onemkl_s8_gemm,8192^3,-,useful_TOPS,298.2,TOPS,94.8% of int8 peak, C0 verified
