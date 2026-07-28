@@ -300,13 +300,41 @@ FP64 满速、Shared-address compute / MultiQ、硬件 sigmoid/tanh、超越函�
 | 2 | FP64 满速 | **否,1/16 速率** | ESIMD 向量 fma,f64 vs f32 | f32 = 9795 GOP/s(16.0 lane-op/cyc/EU);f64 = 596.6(0.97)→ **1:16.4**,FP64 峰值 ≈1.23 TF vs FP32 19.66 TF |
 | 3 | 硬件 sigmoid/tanh | **否** | `sycl::tanh`+sigmoid kernel 反汇编 | 无原生指令;展开为 `math.exp`×5 + `math.inv`×5 + 31 mad + 20 mul(共 137 行,多项式序列) |
 | 4 | 超越函数/EM 增强 | **只有基础 EM** | ESIMD 向量吞吐(exp/rsqrt/sqrt) | ≈3.0–3.1 lane-op/cyc/EU(约 fma 的 1/5) |
-| 5 | Shared-addr compute / MultiQ | **部分** | L0 `zeDeviceGetCommandQueueGroupProperties` + 4 SYCL queue 并发 | 仅 **2 个 queue group(1 计算 + 1 拷贝),计算组只 1 条硬件队列**;4 SYCL 队列并发实测 3.61×(K=4,靠 EU 线程调度器 overlap,不是多硬件队列);USM shared address ✓ |
+| 5 | Shared-addr compute / MultiQ | **部分** | L0 `zeDeviceGetCommandQueueGroupProperties` + 4 SYCL queue 并发 + L0 计算/拷贝队列重叠实测 | 仅 **2 个 queue group(1 计算 + 1 拷贝),计算组只 1 条硬件队列**;4 SYCL 队列并发实测 3.61×(K=4,靠 EU 线程调度器 overlap,不是多硬件队列);**拷贝引擎与计算真并发(重叠率≈100%,见 9.1)**;USM shared address ✓ |
 | 6 | 更大 SLM/Cache | **已是独显规格** | SYCL/L0 查询 | SLM 上限 **128 KB/WG**,L2 = **24 MB**(Xe3 的"+33% L1"是相对核显 Xe2;独显 BMG 的 L1/SLM 已达 256 KB 级) |
 
 **顺带探明的 B70 已有能力**:
 - `dpas_argument_type` 枚举含 **u2/s2/u4/s4**(int2/int4 dpas 路径存在,未测速率)、u8/s8(已测 314 TOPS)、bf16/fp16、tf32——**不含 fp8/fp4**,XMX ISA 层面无 FP8/FP4(精度类,Xe3 才加入)。
 - `sub_group_sizes` 只有 **16 和 32**(无 SIMD8);`aspect::fp64` = 1。
 - 数值正确的多队列并发需要靠线程调度 overlap,MultiQ 硬件队列在 Xe2 上不是卖点。
+
+### 9.1 L0 计算/拷贝队列重叠实测(DeepEP 式通信-计算并存,2026-07-28)
+
+裸 Level Zero API 直接验证(非 SYCL 抽象层):计算队列跑纯 FMA spin kernel
+(16384 线程,零访存),拷贝队列同时跑 8 GB device-to-device 拷贝(模拟
+all-to-all 通信流量),锁频 2.4 GHz:
+
+| 场景 | 耗时 | 说明 |
+|---|---|---|
+| 计算单独(暖) | 11.0 ms(400k iter)/ 22.1 ms(800k iter) | 首次启动有 ~8.4 ms 一次性开销,已剔除 |
+| 拷贝单独 | 25.1 ms | 319 GB/s 逻辑(≈638 GB/s 原始读写流量,已接近 DRAM 饱和) |
+| **并发总耗时** | **24.9 ms** | 等于拷贝单独耗时 |
+| 并发时计算完成时刻 | 11.0 / 22.1 ms | **与单独运行完全相同,零减速** |
+| 重叠效率 (T_c+T_x)/T_both | 1.90(理论上限 1.88) | **≈100% 完美重叠** |
+| 同计算队列 2 kernel | 1.76×(400k)/ 1.38×(800k) | 单硬件队列上靠 EU 线程调度交错;因 spin kernel 延迟受限占不满 EU 才有加速 |
+
+**结论**:B70 虽然只有 1 条计算硬件队列,但**拷贝引擎(blitter)与 EU 是
+真正的硬件并发**——计算型 kernel 与 DMA 拷贝互相零干扰。这正是 DeepEP 式
+"通信/计算并存"在 Intel 平台上对应的机制:通信走拷贝引擎(或与计算分时),
+不占 EU。注意两点边界:
+1. 拷贝单独已接近 DRAM 带宽饱和,若并发的是**带宽型** kernel(如 elementwise/
+   attention),会与拷贝争抢显存带宽而互相减速;**算力型** kernel(XMX GEMM)
+   则不受影响;
+2. B70 是工作站卡,**无 Xe-Link**,跨卡通信只能走 PCIe P2P 或 host staging,
+   本测试验证的是单卡内"拷贝引擎 vs 计算"的并存能力。
+
+复现:`src/l0_overlap.cpp` + `src/spin.cl`(ocloc 编译为 native bin);
+数据 `results/b70/l0_overlap.csv`。
 
 **结论**:六项硬件特性中,B70(Xe2)一项都不具备 Xe3 形态;systolic depth、
 FP64 满速、硬件 sigmoid/tanh 均有明确的否定性实测证据(编译断言 / 1:16 速率比 /

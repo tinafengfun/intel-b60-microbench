@@ -1,0 +1,4 @@
+test,spin_iters,copy_mb,copy_ops,compute_alone_ms,compute_warm_ms,copy_alone_ms,copy_GBs_logical,concurrent_total_ms,compute_done_at_ms,overlap_efficiency,compute_x2_speedup,note
+compute_copy_overlap,400000,512,16,19.4,11.0,25.1,319.0,24.9,11.0,1.79,1.76,compute_alone含~8.4ms首次启动开销;暖机后计算零减速
+compute_copy_overlap,800000,512,16,30.4,22.1,25.1,318.3,24.9,22.1,1.90,1.38,重叠效率理论上限(Tc+Tx)/max=1.88;实测1.90≈完美重叠
+queue_groups,-,-,-,-,-,-,-,-,-,-,-,group0 flags=0x7 compute+copy+cooperative numQueues=1; group1 flags=0x2 copy-only numQueues=1
