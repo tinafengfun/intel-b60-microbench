@@ -336,6 +336,33 @@ all-to-all 通信流量),锁频 2.4 GHz:
 复现:`src/l0_overlap.cpp` + `src/spin.cl`(ocloc 编译为 native bin);
 数据 `results/b70/l0_overlap.csv`。
 
+### 9.2 引擎计数器证据:拷贝引擎完全不占 EU(2026-07-28)
+
+问题:Copy Engine 做 DMA(含卡间 P2P 的引擎路径)是否占用 EU 资源(寄存器、
+线程槽、L1/SLM)?用 xe 驱动 fdinfo 的 per-engine 周期计数器
+(`/proc/<pid>/fdinfo/*` 的 `drm-cycles-{bcs,rcs,ccs,vcs,vecs}`,busy% =
+Δcycles/Δtotal)在持续负载下实测:
+
+| 持续负载 | bcs(拷贝引擎) | ccs(计算引擎) | rcs | 结论 |
+|---|---|---|---|---|
+| 纯 blitter d2d 拷贝循环(8GB/轮) | **100%** | **0.00%** | 0.00% | 拷贝全程无任何计算/渲染引擎活动 |
+| 纯 FMA spin kernel 循环 | 0.00% | **100%** | 0.00% | kernel 走 ccs,拷贝引擎空闲(对照) |
+| 拷贝 + kernel 并发 | 79% | 100% | 0.00% | 两引擎同时满载,互不占用 |
+
+kernel 执行必须占用计算引擎(ccs),这是不可绕过的;纯拷贝时 ccs/rcs 均为 0
+说明 **blitter DMA 不启动任何 kernel**——不分配 EU 线程、不碰寄存器堆、不用
+L1/SLM,数据路径为 VRAM ↔ 内存子系统(L2)↔ bcs DMA。与 9.1 的"并发时计算
+零减速"互相印证。
+
+**关于卡间 P2P**:本节点只有 1 张 B70,无法实测真实卡间传输。
+`zeDeviceCanAccessPeer` 实测:B70→自身 = YES;B70→核显(UHD 770)查询直接
+触发 NEO memory manager abort(等同不支持)。架构上,若双 B70 且 PCIe P2P 使能,
+跨卡 DMA 与卡内拷贝共用同一 bcs 引擎路径(VRAM → PCIe → 对端 VRAM),同样不
+经 EU;瓶颈会是 PCIe 带宽而非引擎或 EU。此条为架构推断,非本机实测。
+
+复现:`src/l0_engload.cpp`(fdinfo 采样脚本 engmon.sh 在其注释中);
+数据 `results/b70/engine_occupancy.csv`。
+
 **结论**:六项硬件特性中,B70(Xe2)一项都不具备 Xe3 形态;systolic depth、
 FP64 满速、硬件 sigmoid/tanh 均有明确的否定性实测证据(编译断言 / 1:16 速率比 /
 反汇编展开序列)。这些特性可作为区分 Xe2 与 Xe3 芯片的指纹测试。

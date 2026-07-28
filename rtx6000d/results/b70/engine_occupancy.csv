@@ -1,0 +1,6 @@
+mode,bcs_busy_pct,ccs_busy_pct,rcs_busy_pct,vcs_busy_pct,vecs_busy_pct,note
+copy_only,100.00,0.00,0.00,0.00,0.00,纯blitter d2d拷贝循环(8GB/轮);计算/渲染引擎全程零活动
+spin_only,0.00,100.00,0.00,0.00,0.00,纯FMA kernel循环;kernel走ccs,拷贝引擎空闲(对照)
+copy_and_spin,78.99,100.00,0.00,0.00,0.00,拷贝+kernel并发;两引擎同时忙,互不占用;bcs<100因同步点间空闲
+p2p_capability,-,-,-,-,-,zeDeviceCanAccessPeer: B70->B70(self)=YES; B70->UHD770核显查询触发NEO abort(不支持)
+method,-,-,-,-,-,xe fdinfo /proc/pid/fdinfo drm-cycles-{bcs,rcs,ccs} busy=delta_cycles/delta_total_cycles;锁频2.4GHz
