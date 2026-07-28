@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
       all.push_back(x);
       ze_device_properties_t p = {ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES};
       zeDeviceGetProperties(x, &p);
-      if (p.deviceId == 0xe223) b70 = x;
+      if (p.deviceId == 0xe223 && !b70) b70 = x;
     }
     if (!ctx) {
       ze_context_desc_t cd = {ZE_STRUCTURE_TYPE_CONTEXT_DESC};

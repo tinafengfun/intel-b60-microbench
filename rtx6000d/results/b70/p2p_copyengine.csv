@@ -1,0 +1,11 @@
+test,pair,src_bdf,dst_bdf,path,bandwidth_GBs,note
+p2p_capability,all_pairs,-,-,-,-,8x8 zeDeviceCanAccessPeer 全 YES(含跨 socket)
+local_d2d_control,d0->d0,0000:2b:00.0,0000:2b:00.0,card内,253.0,4GB copy engine d2d 对照
+p2p_bw,d0->d1,0000:2b:00.0,0000:2f:00.0,同 PCIe segment,53.3,PCIe Gen5 x16 直通 DMA(非 host staging)
+p2p_bw,d1->d0,0000:2f:00.0,0000:2b:00.0,同 PCIe segment,53.3,双向对称
+p2p_bw,d0->d4,0000:2b:00.0,0000:ac:00.0,跨 socket,29.7,经 UPI 互联,约为同 segment 的 56%
+p2p_bw,d4->d0,0000:ac:00.0,0000:2b:00.0,跨 socket,29.7,双向对称
+engine_src_during_p2p,d0(src),0000:2b:00.0,-,-,-,bcs=100% ccs=0% rcs=0%:源卡只有拷贝引擎工作
+engine_dst_during_p2p,d1(dst),0000:2f:00.0,-,-,-,全部引擎 0.00%:目标卡完全被动,PCIe 写直接落 VRAM
+concurrent_p2p_plus_kernel,d0,0000:2b:00.0,-,-,-,bcs=100%(P2P进程)+ccs=100%(spin进程)同卡同时满载,互不干扰
+method,-,-,-,-,-,l0_p2p.cpp(copy 队列 zeCommandListAppendMemoryCopy 指向 peer 显存) + xe fdinfo drm-cycles 采样;锁频 2.4GHz;节点 smc-14-B70 (8x B70)

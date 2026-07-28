@@ -354,14 +354,47 @@ kernel 执行必须占用计算引擎(ccs),这是不可绕过的;纯拷贝时 cc
 L1/SLM,数据路径为 VRAM ↔ 内存子系统(L2)↔ bcs DMA。与 9.1 的"并发时计算
 零减速"互相印证。
 
-**关于卡间 P2P**:本节点只有 1 张 B70,无法实测真实卡间传输。
+**关于卡间 P2P(初版,单卡节点)**:单卡节点无法实测真卡间传输。
 `zeDeviceCanAccessPeer` 实测:B70→自身 = YES;B70→核显(UHD 770)查询直接
-触发 NEO memory manager abort(等同不支持)。架构上,若双 B70 且 PCIe P2P 使能,
-跨卡 DMA 与卡内拷贝共用同一 bcs 引擎路径(VRAM → PCIe → 对端 VRAM),同样不
-经 EU;瓶颈会是 PCIe 带宽而非引擎或 EU。此条为架构推断,非本机实测。
+触发 NEO memory manager abort(等同不支持)。卡间实测见 9.3。
 
-复现:`src/l0_engload.cpp`(fdinfo 采样脚本 engmon.sh 在其注释中);
-数据 `results/b70/engine_occupancy.csv`。
+### 9.3 卡间 P2P 实测:Copy Engine 跨卡 DMA 不占 EU(8×B70 节点 smc-14-B70,2026-07-28)
+
+在 8 卡 B70 节点(2 socket,每 socket 4 卡)用裸 L0 完成真卡间验证:
+copy 队列 `zeCommandListAppendMemoryCopy`,源指针在 d0 显存、目标指针为
+d1 显存(peer 分配),全程 DMA。
+
+**P2P 可达性**:`zeDeviceCanAccessPeer` 8×8 矩阵 **全部 YES**(含跨 socket 对)。
+
+**带宽**(copy engine,4 GB/轮):
+
+| 路径 | 带宽 | 解读 |
+|---|---|---|
+| d0→d0 卡内 d2d(对照) | 253 GB/s | 卡内 blitter 上限 |
+| d0→d1 同 PCIe segment | **53.3 GB/s** | PCIe Gen5 x16 直通 P2P DMA(非 host staging,中转只能到 ~25 GB/s) |
+| d0→d4 跨 socket | **29.7 GB/s** | 经 UPI 互联,约为同 segment 的 56% |
+| 反向 | 完全对称 | — |
+
+**引擎占用**(xe fdinfo `drm-cycles-*`,持续 P2P 负载下):
+
+| 卡 | bcs | ccs | rcs | 结论 |
+|---|---|---|---|---|
+| 源卡 d0 | **100%** | 0.00% | 0.00% | 只有拷贝引擎工作,EU 侧零活动 |
+| 目标卡 d1 | 0.00% | 0.00% | 0.00% | **完全被动**——PCIe 写直接落入 VRAM,本卡任何引擎都不参与 |
+
+**通信/计算并发**(同卡,两个独立进程):P2P 进程把 d0 bcs 打到 100% 的
+同时,spin kernel 进程把 d0 ccs 打到 100%——**bcs 与 ccs 同卡同时满载,
+互不干扰**。
+
+**结论**:卡间 P2P = 源卡 blitter 执行 `VRAM → PCIe → 对端 VRAM` 的纯 DMA,
+**两端都不占用 EU**(无 kernel、无寄存器堆/线程槽/L1/SLM 消耗),9.2 的卡内
+推断在真卡间场景下得到实测坐实。对 DeepEP 类 all-to-all 的推论:通信走
+blitter 可与 XMX GEMM 真并发,但跨卡带宽(53 GB/s 同 segment / 30 GB/s 跨
+socket)比卡内拷贝低一个数量级,MoE 专家放置应优先同 segment(本机为同
+socket 4 卡一组)。
+
+复现:`src/l0_p2p.cpp`、`src/engmon2.py`(fdinfo 采样);
+数据 `results/b70/p2p_copyengine.csv`。
 
 **结论**:六项硬件特性中,B70(Xe2)一项都不具备 Xe3 形态;systolic depth、
 FP64 满速、硬件 sigmoid/tanh 均有明确的否定性实测证据(编译断言 / 1:16 速率比 /
