@@ -287,6 +287,34 @@ python3 num_probe.py              # 数值探针:每次运行输出 tile +16.0
 
 数据:`results/b70/coop_vs_esimd_v4.csv`。
 
+## 9. Xe3 架构特性在 B70(Xe2)上的探测(2026-07-28)
+
+Xe3(Panther Lake)公布的特性清单中,去掉"数据精度格式"(FP8/FP4/MX)与
+"计算范式"两类,属于 **GPU 硬件本身功能** 的改进有六项:systolic depth 16、
+FP64 满速、Shared-address compute / MultiQ、硬件 sigmoid/tanh、超越函数/EM 增强、
+更大 SLM/Cache。以下是在 B70(Xe2 / BMG-G31)上的逐项底层探测结果。
+
+| # | Xe3 特性(硬件类) | B70(Xe2) 是否具备 | 测试方法 | 实测结果 |
+|---|---|---|---|---|
+| 1 | Systolic depth 16(K 加倍) | **否** | ESIMD `xmx::dpas<16,8>` 编译探测 | 编译期 static_assert:`Systolic depth must be equal to 8` |
+| 2 | FP64 满速 | **否,1/16 速率** | ESIMD 向量 fma,f64 vs f32 | f32 = 9795 GOP/s(16.0 lane-op/cyc/EU);f64 = 596.6(0.97)→ **1:16.4**,FP64 峰值 ≈1.23 TF vs FP32 19.66 TF |
+| 3 | 硬件 sigmoid/tanh | **否** | `sycl::tanh`+sigmoid kernel 反汇编 | 无原生指令;展开为 `math.exp`×5 + `math.inv`×5 + 31 mad + 20 mul(共 137 行,多项式序列) |
+| 4 | 超越函数/EM 增强 | **只有基础 EM** | ESIMD 向量吞吐(exp/rsqrt/sqrt) | ≈3.0–3.1 lane-op/cyc/EU(约 fma 的 1/5) |
+| 5 | Shared-addr compute / MultiQ | **部分** | L0 `zeDeviceGetCommandQueueGroupProperties` + 4 SYCL queue 并发 | 仅 **2 个 queue group(1 计算 + 1 拷贝),计算组只 1 条硬件队列**;4 SYCL 队列并发实测 3.61×(K=4,靠 EU 线程调度器 overlap,不是多硬件队列);USM shared address ✓ |
+| 6 | 更大 SLM/Cache | **已是独显规格** | SYCL/L0 查询 | SLM 上限 **128 KB/WG**,L2 = **24 MB**(Xe3 的"+33% L1"是相对核显 Xe2;独显 BMG 的 L1/SLM 已达 256 KB 级) |
+
+**顺带探明的 B70 已有能力**:
+- `dpas_argument_type` 枚举含 **u2/s2/u4/s4**(int2/int4 dpas 路径存在,未测速率)、u8/s8(已测 314 TOPS)、bf16/fp16、tf32——**不含 fp8/fp4**,XMX ISA 层面无 FP8/FP4(精度类,Xe3 才加入)。
+- `sub_group_sizes` 只有 **16 和 32**(无 SIMD8);`aspect::fp64` = 1。
+- 数值正确的多队列并发需要靠线程调度 overlap,MultiQ 硬件队列在 Xe2 上不是卖点。
+
+**结论**:六项硬件特性中,B70(Xe2)一项都不具备 Xe3 形态;systolic depth、
+FP64 满速、硬件 sigmoid/tanh 均有明确的否定性实测证据(编译断言 / 1:16 速率比 /
+反汇编展开序列)。这些特性可作为区分 Xe2 与 Xe3 芯片的指纹测试。
+
+复现:`src/test_xe3_features.cpp`(mode 0/1/2/3/5)、`src/test_dpas16.cpp`、
+`src/l0_props.cpp`、`src/tanh_probe.cpp`(反汇编证据);数据 `results/b70/xe3_feature_probes.csv`。
+
 ## 附录:复现
 
 ```bash

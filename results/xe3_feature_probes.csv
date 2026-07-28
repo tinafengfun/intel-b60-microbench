@@ -1,0 +1,11 @@
+# Xe3 feature probes on B70 (Xe2 / BMG-G31 0xe223), 2.4GHz locked, 2026-07-28
+feature,category,supported_on_b70,method,result,note
+systolic_depth_16,xmx_hardware,no,ESIMD dpas<16 8> compile probe,static_assert: Systolic depth must be equal to 8,hard limit depth=8
+fp64_full_rate,vector_engine,no (1/16 rate),ESIMD vector fma f64 vs f32,f32=9795 GOP/s (16.0 lane-op/cyc/EU); f64=596.6 (0.97),FP64 peak ~1.23 TF vs FP32 19.66 TF
+hw_sigmoid_tanh,em_sfu,no,disasm of sycl::tanh+sigmoid kernel,no native opcode; math.exp x5 + math.inv x5 + 31 mad + 20 mul (~137 instr),emulated polynomial sequence
+transcendental_em,em,base only,ESIMD vector throughput,exp=3.05 rsqrt=3.12 sqrt=3.12 lane-op/cyc/EU,~1/5 of fma rate
+multiq_shared_addr,scheduler_memory,partial,L0 queue groups + 4-queue concurrency,2 queue groups (1 compute + 1 copy) 1 hw queue each; 4 SYCL queues overlap 3.61x,concurrency via EU thread scheduler not multiple hw queues
+slm_cache_size,memory,already large (xe2 dGPU),SYCL/L0 query,SLM cap 128 KB/WG; L2 = 24576 KB,xe3 +33% L1 is vs iGPU Lunar Lake
+fp8_fp4_xmx,precision,no,dpas_argument_type enum inspection,enum has u2 s2 u4 s4 u8 s8 bf16 fp16 tf32; no fp8/fp4,precision-class feature (excluded from hardware list)
+mx_format,precision,no,no toolchain/ISA path,-,precision-class feature
+misc_subgroup_sizes,-,-,device query,sub_group_sizes = 16 32 only (no SIMD8),max_num_sub_groups=64
