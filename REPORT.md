@@ -1125,6 +1125,57 @@ The most notable difference is the **SLM/shared memory architecture**:
 
 ---
 
+## B70 Follow-on: Copy Engine, Queue Topology & Cross-Card P2P
+
+Extended work on the Arc Pro **B70 (BMG-G31)** using raw Level Zero. Full details
+(in Chinese) in `rtx6000d/report/B70_vs_B60_comparison.md` §9; sources in
+`rtx6000d/src/`, data in `rtx6000d/results/b70/`.
+
+**Queue topology.** Only 2 L0 command queue groups: 1 compute (flags=0x7,
+numQueues=1) + 1 copy (flags=0x2, numQueues=1). No MultiQ-style multiple hardware
+compute queues — multi-kernel concurrency relies on the EU thread scheduler
+(4 SYCL queues over latency-bound kernels measured 3.61×/4).
+
+**Copy engine does not touch EUs.** Proven at the engine-counter level via xe
+fdinfo (`drm-cycles-{bcs,ccs,rcs}` in `/proc/<pid>/fdinfo/*`):
+
+| Sustained load | bcs (copy) | ccs (compute) | rcs |
+|---|---|---|---|
+| Pure blitter d2d copy loop | 100% | 0.00% | 0.00% |
+| Pure FMA kernel loop (control) | 0.00% | 100% | 0.00% |
+
+No kernel executes during blitter DMA → no EU threads, register file, or L1/SLM
+usage. Concurrent copy+compute runs both engines at 100% with zero mutual
+slowdown (overlap efficiency ≈ 1.90/1.88 theoretical max).
+
+**Cross-card P2P (8×B70 node).** `zeDeviceCanAccessPeer` 8×8 matrix: all YES.
+Bandwidth via copy engine, 4 GB per burst:
+
+| Path | Bandwidth | Notes |
+|---|---|---|
+| d0→d0 local d2d (control) | 253 GB/s | on-card blitter ceiling |
+| d0→d1 same PCIe segment | **53.3 GB/s** | direct PCIe Gen5 x16 P2P DMA (host staging would cap ~25 GB/s) |
+| d0→d4 cross-socket | **29.7 GB/s** | traverses UPI; ~56% of intra-segment |
+
+During sustained P2P: source card bcs=100% with ccs/rcs=0%; **target card shows
+0.00% on every engine** — PCIe writes land in its VRAM with zero local engine
+involvement. A P2P process and a kernel process simultaneously saturate bcs and
+ccs on the same card. Implication for DeepEP-style MoE all-to-all: communication
+overlaps compute for free on the EU side, but cross-card bandwidth is ~10× below
+on-card copy, so experts should be placed within the same 4-card PCIe segment.
+
+| File | Description |
+|---|---|
+| `rtx6000d/src/l0_overlap.cpp` + `spin.cl` | L0 compute/copy queue overlap test |
+| `rtx6000d/src/l0_engload.cpp` | Sustained engine load generator for fdinfo sampling |
+| `rtx6000d/src/l0_p2p.cpp` | Cross-card P2P capability matrix + bandwidth + load |
+| `rtx6000d/src/engmon2.py` | xe fdinfo per-engine busy% sampler |
+| `rtx6000d/results/b70/l0_overlap.csv` | Overlap data |
+| `rtx6000d/results/b70/engine_occupancy.csv` | On-card engine occupancy data |
+| `rtx6000d/results/b70/p2p_copyengine.csv` | Cross-card P2P data |
+
+---
+
 ## Files
 
 | File | Description |
