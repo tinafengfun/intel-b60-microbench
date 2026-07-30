@@ -403,6 +403,46 @@ FP64 满速、硬件 sigmoid/tanh 均有明确的否定性实测证据(编译断
 复现:`src/test_xe3_features.cpp`(mode 0/1/2/3/5)、`src/test_dpas16.cpp`、
 `src/l0_props.cpp`、`src/tanh_probe.cpp`(反汇编证据);数据 `results/b70/xe3_feature_probes.csv`。
 
+## 10. FP8 upscale 到 BF16 的实现机制:软件模拟,非硬件指令(2026-07-30)
+
+问题:BMG 没有原生 FP8 硬件,oneDNN/llm-scaler 的 W8A16 FP8 GEMM 如何把
+FP8 权重 upscale 到 BF16?是硬件指令还是软件?
+
+**方法**:写 FP8(e4m3/e5m2)→BF16 upcast kernel(OpenCL C),ocloc 编译为
+BMG 原生码后反汇编,检查 IGC 实际生成的指令(`src/fp8_upcast.cl`)。
+
+**反汇编证据**(e4m3→bf16,SIMD32,每元素约 8 条普通 ALU):
+
+```
+mov  r13.w,  r12.ub          // 零扩展 uchar(fp8 位型) -> ushort
+shl  r13.w,  r13.w, 8        // 左移 8 位: S EEEE MMM 正好落入 fp16 位布局
+mul  r16:hf, r13:hf, 256.0hf // 用 FP16 乘法器做指数重偏置(bias 7→15,×2^8)
+mov  r18:f,  r16:hf          // 原生 hf -> f32 转换(2 条 16 宽)
+shr/and/add3/shr             // f32 -> bf16 的 RNE 序列(+0x7fff+lsb 后 >>16)
+```
+
+e5m2 版本少一条 `mul 256.0`(e5m2 指数域与 fp16 天然对齐,纯移位)。
+**整个二进制里最小的浮点操作数类型是 `:hf`,不存在 `:hf8`/`:bf8` 类型或
+转换指令**——与 XMX 侧事实自洽:`dpas_argument_type` 枚举只有
+u2/s2/u4/s4/u8/s8/bf16/f16/tf32,不含 fp8/fp4(Xe3 才加入)。
+
+**机制结论**:
+
+1. **为什么软件模拟便宜**:e4m3 与 fp16 位布局兼容(左移 8 位即对齐),唯一
+   差异是指数偏置(7 vs 15),IGC 用一条 FP16 乘法(×2^8)代替整数指数加减;
+   fp16→bf16 走原生 hf→f32 cvt + 整数 RNE。
+2. **完整管线**:`VRAM 读 FP8(带宽减半)` → `EU 向量 ALU 逐元素 upcast
+   (~8 条/元素,寄存器内完成)` → `BF16 喂 XMX dpas(原生)` → `FP32 累加`
+   → `BF16 输出`。upcast 走 EU 向量流水线,dpas 走 XMX 单元,两者可流水
+   掩盖;权重又被 M 维复用摊销——**GEMM 有效吞吐仍接近原生 bf16 的
+   157 TF,不存在 FP8 双倍速率**。
+3. **收益全在显存侧**:权重常驻 1 byte/param(占用减半)+ 读带宽减半
+   (GDDR6 工作站卡的真正价值),并避免整层 dequant 出 FP16 副本。
+4. 真正的硬件 FP8(cvt 指令 + XMX fp8 dpas)要到 Xe3。
+
+复现:`src/fp8_upcast.cl`;`ocloc compile -file fp8_upcast.cl -device bmg-g31`
+后 `ocloc disasm` 查看。
+
 ## 附录:复现
 
 ```bash
