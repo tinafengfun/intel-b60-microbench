@@ -5,6 +5,7 @@ spirv_runner
 mem_runner
 bench_*
 !bench_*.cpp
+!bench_*.cu
 *_disasm/
 disasm_*/
 sweep_*

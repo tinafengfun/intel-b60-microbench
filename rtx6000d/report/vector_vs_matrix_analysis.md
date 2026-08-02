@@ -354,6 +354,36 @@ SDPA(Qwen3-30B-A3B 形状:H=32,d=128),GPU profiling 时间戳计量,验证
   的 host 开销,小 kernel 密集场景这是数量级问题)③EM/exp 吞吐只是融合
   之后才会浮出的次一级矛盾。
 
+### 跨平台对照:RTX PRO 5000 跑同一 naive SDPA(2026-08-02)
+
+同形状同逻辑移植到 CUDA(cuBLASLt bf16 + 三趟 softmax,cudaEvent 时间戳,
+`src/bench_sdpa.cu`):
+
+| S=4096,H=32 | serial span | gemm busy | softmax busy | softmax 占比 | naive 税(serial/gemmonly) |
+|---|---|---|---|---|---|
+| B70 | 12.12 ms | 4.41 ms(62 TF) | 7.54 ms | 62% | **2.25×** |
+| RTX5000 | 7.58 ms | 2.69 ms(102 TF) | 4.89 ms | 64.5% | **2.35×** |
+
+| S | B70 serial / gemmonly | RTX5000 serial / gemmonly |
+|---|---|---|
+| 1024 | 1.21 / 0.54 ms | 1.95 / 0.71 ms |
+| 4096 | 12.12 / 5.38 ms | 7.58 / 3.23 ms |
+| 8192 | 12068 / 5992 ms(触崖+host stall) | 24.56 / 11.86 ms(健康) |
+
+- **两平台 naive 税几乎相同(2.25× vs 2.35×)**:RTX5000 的 softmax 同样是
+  带宽 bound(7.2GB 流量 @ 1.47 TB/s ≈ 其 DRAM 极限),不是 ALU bound。
+  "naive SDPA 的 softmax 税"是结构性问题,与 vendor 无关——FA 融合对
+  两个平台都是 2.3× 级别的收益。
+- **K=128 瘦 GEMM 效率两平台也一致**:都只有各自峰值的 ~1/3(B70 62/157,
+  RTX5000 102/289),tensor core 对瘦 K 的利用率是共同短板。
+- **8GB 占用悬崖是 B70 独有**:RTX5000 在 13GB 占用下 softmax 依然
+  790 Gops/s(72GB 显存 + 更大的 TLB reach);B70 超过 ~8GB 就崩到
+  4.7 GB/s。长上下文场景 B70 对融合的需求比 NVIDIA 更刚性。
+- RTX5000 的 host 提交路径健康(cuBLASLt 每调用 µs 级,span≈wall),
+  没有 B70/oneMKL 的 3-15ms/次开销——B70 的软件栈差距比硬件差距大。
+- pipe(3 流重叠)在 RTX5000 上同样无收益(±7%),再次确认带宽争用
+  不能用流重叠解决。
+
 ## 附:复现
 
 ```bash
@@ -367,6 +397,8 @@ python3 src/plot_vector_share.py   # → report/vector_share_vs_S.png + results/
 # §9 naive SDPA 实测(B70,需 oneMKL;计时用 GPU profiling 事件,勿用 host wall)
 icpx -fsycl -fsycl-targets=intel_gpu_bmg_g31 -O3 -std=c++17 -o bench_sdpa src/bench_sdpa.cpp -qmkl=parallel
 ./bench_sdpa 4096 32 serial   # serial | pipe | gemmonly
+# §9 跨平台(RTX PRO 5000,CUDA 13, sm_120a)
+nvcc -O3 -gencode arch=compute_120a,code=sm_120a src/bench_sdpa.cu -o bench_sdpa -lcublasLt
 ```
 
 注意:B70 f16 速率测试的 DCE 陷阱——guard 值若取 half 不可精确表示的常数

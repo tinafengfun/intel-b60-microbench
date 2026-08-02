@@ -15,3 +15,13 @@ serial,8192,8,11.51,3.99,6.24,1.43,占用 3.2GB:softmax 0.78ms/头≈573GB/s 正
 serial,8192,12,18.86,6.50,10.08,2.39,占用 4.8GB:0.84ms/头 正常
 serial,8192,16,1503,8.35,13.20,3.09,占用 6.5GB:busy 正常但 span 被 host 提交 stall 撑大
 serial,8192,24,2270,12.45,2252.73,4.75,占用 9.7GB:softmax 94ms/头,触崖
+# --- RTX PRO 5000 (cuBLASLt bf16 + 同一 softmax 逻辑,cudaEvent 时间戳) ---
+rtx_serial,1024,32,1.95,,1.24,,gemm 0.70ms @24.5TF;softmax 占 64%
+rtx_pipe,1024,32,1.73,,,,span 有效;stage 拆分跨流不准略
+rtx_gemmonly,1024,32,0.71,,0,,gemm 24.2 TF
+rtx_serial,4096,32,7.58,,4.89,,gemm 2.69ms @102TF;softmax 占 64.5%;税 2.35x
+rtx_pipe,4096,32,7.97,,,,重叠无收益
+rtx_gemmonly,4096,32,3.23,,0,,gemm 85.1 TF
+rtx_serial,8192,32,24.56,,13.59,,gemm 10.98ms @100TF;softmax 790Gops 健康(72GB 卡无占用悬崖)
+rtx_pipe,8192,32,26.16,,,,重叠无收益
+rtx_gemmonly,8192,32,11.86,,0,,gemm 92.7 TF
