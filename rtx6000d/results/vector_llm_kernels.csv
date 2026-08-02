@@ -1,0 +1,8 @@
+kernel,b70_GBs,b70_pct_of_triad,rtx5000_GBs,rtx5000_pct_of_triad,verdict
+triad_bf16_baseline,497.2,100%,1115.7,100%,带宽基准
+rmsnorm_bf16_N2048,453.1,91%,1005.9,90%,带宽bound
+swiglu_silu_mul_bf16,485.9,98%,853.0,76%,带宽bound(RTX5000略受exp影响)
+softmax_fp32_N151936,802.9,161%,1457.6,131%,带宽bound(>100%因L2缓存重读)
+dequant_fp8_to_bf16_hw_cvt,-,-,1066.3,96%,带宽bound(硬件cvt指令)
+dequant_fp8_to_bf16_sw_shift,437.4,88%,1087.2,97%,B70上唯一低于基线12%的kernel:无硬件cvt,ALU开销可见
+method,-,-,-,-,SYCL版 src/bench_llm_vector.cpp(B70锁频2.4GHz);CUDA版 src/bench_llm_vector.cu(sm_120a,GPU0);取20次最优

@@ -1,0 +1,11 @@
+type,b60,b70,rtx_pro_5000,note
+vector_fp32_FMA_TFLOPS,12.29,19.66,65.73,B60按160EU推算;B70实测16.0 lane-op/cyc/EU@2.4GHz;RTX5000实测116 FMA/clk/SM@2.58GHz
+vector_fp16_FMA_TFLOPS,-,~19-20,71.71,B70实测f16与f32同速率(非2x);RTX5000 HFMA2 63.3op/clk/SM(与fp32同lane率)
+vector_bf16_FMA_TFLOPS,-,3.73,-,B70实测:无bf16向量FMA指令,IGC展开为f32序列,仅1/4 f32速率
+transcendental_GOPS,-,1843,4530,B70 EM实测~3.0 lane-op/cyc/EU(1:5.3 vs fma);RTX5000 MUFU实测~16 op/clk/SM(1:7.3)
+matrix_bf16_TFLOPS,97.66,157.2,289.4,B60/B70为XMX实测;RTX5000为mma fp16实测(fp16acc)
+matrix_int8_fp8_TOPS,-,314.4,578.2,B70为int8 dpas;RTX5000为fp8 e4m3 mma
+matrix_fp4_TOPS,-,不支持,577.2,B70 XMX无fp4;RTX5000 fp4 e2m1 mma
+ratio_f32_vs_bf16matrix,1:7.9,1:8.0,1:4.4,B70/B60 vector:matrix差距是RTX5000的约2倍
+ratio_f32_vs_fp8int8,-,1:16,1:8.8,-
+dram_bw_achieved_GBs,-,497,1116,triad实测;RTX5000理论1344
