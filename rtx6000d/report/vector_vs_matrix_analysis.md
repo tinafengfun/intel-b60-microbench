@@ -171,6 +171,35 @@ NVIDIA 的路线是 **"tensor core 做 GEMM + CUDA core/MUFU 做 vector + 软件
    结果在写回显存前直接过一道 vector 操作(bias/activation/dequant-scale),
    省一次显存往返——这对带宽受限的 B70 收益比 NVIDIA 更大。
 
+## 6. 追问:vector 会成为推理瓶颈吗?需要堆 vector 单元吗?
+
+**答案:不需要堆 vector 计算单元——B70 的 1:8 在 LLM 负载下是宽裕的;
+vector 瓶颈是结构性问题(带宽、转换、超越函数),不是规模问题。**
+
+分四层论证:
+
+1. **单 kernel 层面:不会(实测已否定)**。五类 LLM vector kernel 在 B70 和
+   RTX5000 上全部跑到带宽基线的 88–98%——卡在显存带宽,不卡在 ALU。
+   给这些 kernel 加 vector 单元,吞吐不会动。
+2. **decode 系统层面:不会**。decode 每 token 读全部权重,TPOT 由访存决定;
+   B70 带宽(497 GB/s)与 RTX5000(1116 GB/s)的 2.2 倍差距,影响远大于任何
+   算力差异。且 MoE tensor 利用率 ≈ topk/experts(2–6%),XMX 峰值在 decode
+   下大面积闲置——matrix 都算不满,vector 更不缺。
+3. **vector 真能成为瓶颈的条件:算力比极端 + 长上下文 prefill**。以
+   Qwen3-30B 一层估算:matrix ≈ 125 MFLOP/token,vector ≈ 0.2 MFLOP
+   (占 ~0.15%)。耗时占比 = flops 占比 × 算力比:B70(1:8)≈ 1.2%(不是
+   瓶颈);B200(1:30)≈ 4.5%,长上下文 softmax exp 再放大数倍——这正是
+   FlashAttention-4 在 Blackwell 上 "softmax 与 matmul 耗时相当" 的来源。
+   且矛盾集中在两个特定功能:**超越函数 exp**(B70 EM = fma 的 1/5.3;
+   NVIDIA MUFU 两代未涨,FA4 用 FMA 多项式绕开)与**精度转换 cvt**
+   (B70 bf16 向量 FMA 仅 1/4 速率、fp8 dequant ~8 ALU/元素)。
+4. **设计判据**:vector 峰值只需 ≥ matrix 峰值 × vector flops 占比
+   (≈ 1–5%),即 **1:20~1:100 就足够**(可流水掩盖前提)。B200 的 1:30
+   已踩线,B70 的 1:8 有富余。
+
+**对 B70 的结论**:不堆 vector 单元;优先级是 带宽 > fp8/bf16 硬件 cvt >
+硬件 sigmoid/tanh/exp 快速通道 > 原生 bf16 向量 FMA(见 §5)。
+
 ## 附:复现
 
 ```bash
