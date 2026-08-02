@@ -292,6 +292,68 @@ tensor bf16 289 TF 峰值 / ~200 TF 实际)。脚本 `src/plot_vector_share.py`,
 - 235B 的固定 matrix 项更大(MoE 302 MF),同样 S 下占比低于 30B;
   即**模型越大,MoE GEMM 越摊薄 vector**,瓶颈更偏向带宽而非算子配比。
 
+## 9. B70 实测:naive 多 kernel SDPA vs FA 式融合的代价(2026-08-02)
+
+用 oneMKL bf16 GEMM(XMX)+ 自写 fp32 softmax kernel 在 B70 上组装 naive
+SDPA(Qwen3-30B-A3B 形状:H=32,d=128),GPU profiling 时间戳计量,验证
+§7/§8 的解析估算。代码 `src/bench_sdpa.cpp`,数据 `results/sdpa_b70.csv`。
+
+### 计时方法学(重要发现)
+
+最初所有测量都显示"病态减速"(GEMM 慢 600 倍),逐一排查后确认:
+
+- **不是 ComfyUI 抢 GPU**(SIGSTOP 后无变化),**不是 oneMKL kernel 慢**;
+- GPU profiling 时间戳显示每个 GEMM 实际只要 0.08-0.21ms(43 TF,正常);
+- 病灶在 **host 侧**:oneMKL `gemm()` 每次调用 submit 3-15ms(偶数 head 慢、
+  奇数快的周期性),`event::wait()` 的信令延迟 10-170ms。这是 L0 驱动事件
+  完成中断聚合 + oneMKL 每调用 host 开销所致。
+- **教训:这套栈上凡以 host wall-clock / per-call wait 计时的微基准都不可信,
+  必须用 `enable_profiling` 事件时间戳,且批提交后只等最后一次。**
+
+### S=4096(H=32,scores 2.1GB)
+
+| mode | GPU span | gemm1+gemm2 busy | softmax busy | softmax 占比 |
+|---|---|---|---|---|
+| serial(单队列) | 12.12 ms | 4.41 ms(62 TF) | 7.54 ms | **62%** |
+| pipe(3 队列重叠) | 12.67 ms | 5.51 ms | 7.55 ms | 60% |
+| gemmonly(无 softmax) | 5.38 ms | 5.64 ms(49 TF) | — | — |
+
+- **naive 的 vector 税是 2.25×**(12.12 vs 5.38),远比 §7 按 ALU 估算的
+  ~5%(S=4K)严重——因为独立 softmax kernel 是**带宽 bound**:对 fp32 scores
+  做 max/sum/写回三趟读 + bf16 P 写回 ≈ 3.5× scores 流量(7.2GB),跑在
+  ~950 GB/s(L2 部分命中)已近内存极限,而 ALU 只用了 356 Gops/s(峰值 4%)。
+- **多队列重叠零收益甚至略负**:softmax 与 GEMM 争的是同一条 DRAM 总线,
+  不是执行单元——重叠救不了带宽 bound。FA 的收益不在"重叠",在**根本不
+  物化 scores**(省掉全部 3.5× 往返流量)。
+- K=128 瘦 GEMM 只到 49-62 TF(峰值 157 的 1/3),matrix 侧也比 §7 按峰值
+  估的慢——两个方向的误差都让"softmax 占比"实测(62%)高于解析(5-11%)。
+
+### S=8192 的内存占用悬崖(H 扫描,serial)
+
+| H | SDPA 总占用 | softmax/头 | 等效带宽 |
+|---|---|---|---|
+| 8 | 3.2 GB | 0.78 ms | 573 GB/s |
+| 12 | 4.8 GB | 0.84 ms | 533 GB/s |
+| 16 | 6.5 GB | 0.83 ms | 542 GB/s(span 被 host stall 撑到 1.5s) |
+| 24 | 9.7 GB | **94 ms** | **4.8 GB/s** |
+| 32 | 12.9 GB | **96 ms** | **4.7 GB/s** |
+
+- 占用超过 ~8GB 后 softmax kernel 时长崩掉 ~100 倍(页表/TLB reach 之外的
+  顺序流也要逐页 walk);H=32 时 serial 总 span 12 秒,其中 GPU busy 仅 21ms,
+  其余是 host 提交 stall(占用越大,oneMKL 每调用开销越大)。
+- 即:naive SDPA 在长上下文不只慢,是**直接不可用**——这定量回答了
+  "为什么必须有 FA 式融合",且融合的紧迫性随 S 平方增长。
+
+### 对 §7/§8 结论的修正
+
+- §7 的 vector 占比(5-26%)是 **ALU 下限**;naive 实现的真实落地值由带宽
+  决定,S=4K 已达 62%。解析曲线(§8)应读作"融合 kernel 内的 softmax 暴露
+  时间",不是独立 kernel 的时间。
+- B70 软件栈的优先级排序(实测支撑):①FA 式融合 SDPA(消 3.5× scores
+  流量 + 避开 8GB 占用悬崖)②框架层批提交/图执行(消 oneMKL 3-15ms/次
+  的 host 开销,小 kernel 密集场景这是数量级问题)③EM/exp 吞吐只是融合
+  之后才会浮出的次一级矛盾。
+
 ## 附:复现
 
 ```bash
@@ -302,6 +364,9 @@ icpx -fsycl -fsycl-targets=intel_gpu_bmg_g31 -O3 -o test_vec_rate_f16 src/test_v
 nvcc -O3 -gencode arch=compute_120a,code=sm_120a src/bench_llm_vector.cu -o bench_llm_vector
 # §8 曲线(纯解析,无需 GPU)
 python3 src/plot_vector_share.py   # → report/vector_share_vs_S.png + results/vector_share_vs_S.csv
+# §9 naive SDPA 实测(B70,需 oneMKL;计时用 GPU profiling 事件,勿用 host wall)
+icpx -fsycl -fsycl-targets=intel_gpu_bmg_g31 -O3 -std=c++17 -o bench_sdpa src/bench_sdpa.cpp -qmkl=parallel
+./bench_sdpa 4096 32 serial   # serial | pipe | gemmonly
 ```
 
 注意:B70 f16 速率测试的 DCE 陷阱——guard 值若取 half 不可精确表示的常数

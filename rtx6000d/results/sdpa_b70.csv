@@ -1,0 +1,17 @@
+# B70 naive SDPA 实测(oneMKL bf16 GEMM + 自写 softmax kernel,GPU profiling 时间戳)
+# 形状: Qwen3-30B-A3B attention, d=128, H heads, S=seq len
+# gpu-span = 所有 kernel 的最早 start 到最晚 end(含 host 提交 stall 造成的 GPU 空闲)
+# stage 列为 32(或 H)个头各自 kernel 时长的总和(GPU busy)
+mode,S,H,gpu_span_ms,gemm1_ms,softmax_ms,gemm2_ms,note
+serial,1024,32,1.21,0.23,0.70,0.21,softmax 占 span 58%
+pipe,1024,32,1.32,0.25,0.83,0.25,3 队列重叠无收益(带宽争用)
+gemmonly,1024,32,0.54,0.23,0,0.30,gemm 32.7 TF
+serial,4096,32,12.12,2.73,7.54,1.68,softmax 占 span 62%,gemm 62 TF
+pipe,4096,32,12.67,3.73,7.55,1.78,重叠无收益
+gemmonly,4096,32,5.38,3.48,0,2.16,gemm 48.7 TF(K=128 瘦 GEMM 只有峰值 1/3)
+serial,8192,32,12068,15.68,3072,5.76,总占用 12.9GB 触崖:softmax 96ms/头≈4.7GB/s
+gemmonly,8192,32,5992,18.86,0,7.98,span 远大于 busy:oneMKL host 提交 3-15ms/次 stall
+serial,8192,8,11.51,3.99,6.24,1.43,占用 3.2GB:softmax 0.78ms/头≈573GB/s 正常
+serial,8192,12,18.86,6.50,10.08,2.39,占用 4.8GB:0.84ms/头 正常
+serial,8192,16,1503,8.35,13.20,3.09,占用 6.5GB:busy 正常但 span 被 host 提交 stall 撑大
+serial,8192,24,2270,12.45,2252.73,4.75,占用 9.7GB:softmax 94ms/头,触崖
