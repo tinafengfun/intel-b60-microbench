@@ -200,6 +200,59 @@ vector 瓶颈是结构性问题(带宽、转换、超越函数),不是规模问�
 **对 B70 的结论**:不堆 vector 单元;优先级是 带宽 > fp8/bf16 硬件 cvt >
 硬件 sigmoid/tanh/exp 快速通道 > 原生 bf16 向量 FMA(见 §5)。
 
+## 7. Attention 中 vector fp32 的定量分析:prefill 长上下文 vs decode(2026-07-30)
+
+以 Qwen3-30B-A3B(32Q/4KV heads,d=128,hidden=2048,top-8 experts inter 768)
+每层每 token 建模。B70 实测速率:fp32 普通 op 9.83 Tops/s、exp(EM) 1.84 Tops/s、
+XMX bf16 157 TF(峰值)/ ~100 TF(实际 FA 估)。
+
+算量:matrix 固定项 114 MF(QKV+O+MoE+router)+ 注意力 8192·S FLOP;
+vector 固定项 0.12 MF(QK-Norm+RoPE+2×RMSNorm+SwiGLU)+ softmax 80·S ops
+(含 16·S exp;decode 翻倍为 160S/32S)。
+
+### Prefill(B70,vector 时间 vs matrix 时间)
+
+| S | matrix | matrix @157TF(@100TF) | vector(非exp+exp) | 占比 |
+|---|---|---|---|---|
+| 8K | 181 MF | 1.2(1.8) µs | 0.14 µs | 8-12% |
+| 32K | 382 MF | 2.4(3.8) µs | 0.51 µs | 13-21% |
+| 128K | 1188 MF | 7.6(11.9) µs | 2.0 µs(exp 单项 1.14) | 17-26% |
+
+- 渐近(S→∞)只看注意力项:vector/注意力 matrix ≈ **32%**,不会反超
+  (softmax 80S ops vs GEMM 8192S FLOP,flops 差 100× 而算力比仅 8-16×)。
+- **结论:不是瓶颈,但不可忽略**。FA 式融合(softmax 与 dpas 重叠)可基本
+  藏掉;softmax 独立 kernel 的 naive 实现则净亏 20%+,还要付 scores 矩阵的
+  显存往返(S=128K 时 32×128K×4B = 16MB/token)。
+- vector 内部大头是 **exp 单项**(S=128K 时占 matrix 15%)——与 FA4 在
+  B200 上的观察同构:矛盾在超越函数吞吐,不是通用 FMA。
+
+### Decode(KV cache,B70)
+
+每层每 token:权重 125MB + KV 2048·S 字节;S=32K 时访存 192MB → 386 µs。
+vector 合计 1.1 µs → **占比 ≈ 0.3%,完全不是瓶颈**(注意力 GEMV 本身也仅
+0.9%)。decode 一切由带宽决定。
+
+### B200 的教训:细节、Rubin 是否改进、软件补救
+
+- H100→B200:BF16 dense 989.5→2250 TF(2.27×),FP32 67→75(1.12×),
+  MUFU 与 SMEM 带宽原地踏步,比例 14.8→30。FA3 时代 softmax 占 attention
+  ~25-30%;照搬 B200 会追平 MMA 时间,利用率掉到 ~50%。
+- FA4 的软件补救([arXiv:2603.05451](https://arxiv.org/html/2603.05451v1)、
+  [tridao.me](https://tridao.me/blog/2026/flash4/)):①软件 exp(FMA 多项式
+  代替 MUFU)②softmax(CUDA core)与 UMMA(tensor core)全异步重叠
+  ③tmem 暂存中间态 → B200 1613 TF = 71% dense peak。
+- **Rubin R100(2026)没有回补 vector**:P100→R100 十年 tensor 涨 2380×、
+  FP32 仅 10×([GPU 架构十年演化](https://research.frankk.site/gpu-architecture-evolution/));
+  Rubin 继续堆 FP4(35-50 PF)与 HBM4(~20 TB/s)([2CRSi](https://2crsi.com/nvidia-vera-rubin-generation-cpu-gpu))。
+  NVIDIA 路线:vector 缺口靠带宽+软件融合补,不靠硬件回补。
+- 软件补救清单:①融合 SDPA(消显存往返)②软件 exp 多项式 ③用 tensor
+  core 做归约(row-sum/max 写成与全 1 向量的 GEMV,XMX 同样成立)
+  ④模型架构层(MLA 压 KV;Qwen3-Next 36/48 层线性注意力,75% 的层无
+  softmax)⑤编译器融合。
+- **对 B70 的启示**:1:8 + EM 1:5.3 比 B200 健康,风险不在硬件配比而在
+  软件栈——没有 FA 式融合 kernel 时,20% vector 开销和 scores 显存往返会
+  原样暴露。这比任何硬件改动都优先。
+
 ## 附:复现
 
 ```bash
