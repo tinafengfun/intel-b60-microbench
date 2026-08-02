@@ -253,6 +253,45 @@ vector 合计 1.1 µs → **占比 ≈ 0.3%,完全不是瓶颈**(注意力 GEMV 
   软件栈——没有 FA 式融合 kernel 时,20% vector 开销和 scores 显存往返会
   原样暴露。这比任何硬件改动都优先。
 
+## 8. Vector 占比 vs 上下文长度曲线:30B/235B × B70/RTX5000(2026-07-31)
+
+把 §7 的单点估算扩展成 S = 1K→256K 的连续曲线,并加入第二个模型
+Qwen3-235B-A22B(hidden 4096,64Q/4KV heads,inter 1536:matrix 固定项 446 MF +
+注意力 16384·S FLOP;vector 固定项 0.23 MF + softmax 160·S ops 含 32·S exp)
+和第二个平台 RTX PRO 5000(fp32 普通 op ~32.9 Tops/s、MUFU exp 4.34 Tops/s、
+tensor bf16 289 TF 峰值 / ~200 TF 实际)。脚本 `src/plot_vector_share.py`,
+数据 `results/vector_share_vs_S.csv`。
+
+![vector share vs S](vector_share_vs_S.png)
+
+关键读数(vector 时间 / (vector+matrix) 时间,prefill 每层每 token):
+
+| 模型 @ 平台 | matrix 速率 | S=1K | S=8K | S=32K | S=128K | S=256K |
+|---|---|---|---|---|---|---|
+| 30B @ B70 | 峰值 157 TF | 3.4% | 10.7% | 17.5% | 20.9% | 21.7% |
+| 30B @ B70 | 实际 100 TF | 2.2% | 7.1% | 11.9% | 14.4% | 15.0% |
+| 30B @ RTX5000 | 峰值 289 TF | 2.2% | 7.4% | 12.6% | 15.3% | 15.9% |
+| 30B @ RTX5000 | 实际 200 TF | 1.5% | 5.2% | 9.0% | 11.1% | 11.6% |
+| 235B @ B70 | 峰值 157 TF | 1.8% | 6.9% | 14.2% | 19.4% | 20.9% |
+| 235B @ B70 | 实际 100 TF | 1.2% | 4.5% | 9.5% | 13.3% | 14.4% |
+| 235B @ RTX5000 | 峰值 289 TF | 1.1% | 4.7% | 10.1% | 14.1% | 15.3% |
+| 235B @ RTX5000 | 实际 200 TF | 0.8% | 3.3% | 7.2% | 10.2% | 11.1% |
+
+结论:
+
+- **S ≤ 8K 时 vector 占比 < 11%**,融合 kernel 一盖就没;真正的暴露区在
+  S ≥ 32K 的长上下文 prefill。
+- **B70 的 vector 占比系统性高于 RTX5000 约 3-5 个百分点**(同模型同 S),
+  差距来源不是 FMA 比值(1:8 vs 1:4.4 中 B70 反而更健康),而是
+  **EM/exp 吞吐**:B70 exp 1.84 Tops/s 仅为普通 op 的 1/5.3,RTX5000 MUFU
+  4.34 为 1/7.6——但 B70 的 XMX:EM 比值 157:1.84 = 85 倍于 RTX5000 的
+  289:4.34 = 67,softmax 重的 workload 在 B70 上相对更吃亏。
+- 曲线在 S ≈ 128K 后趋于平缓(渐近值由 softmax ops : 注意力 FLOP 的固定
+  系数决定),**不会随 S 继续恶化**——vector 永远不会反超 matrix,但
+  20% 量级的固定税需要 FA 式融合来消除。
+- 235B 的固定 matrix 项更大(MoE 302 MF),同样 S 下占比低于 30B;
+  即**模型越大,MoE GEMM 越摊薄 vector**,瓶颈更偏向带宽而非算子配比。
+
 ## 附:复现
 
 ```bash
@@ -261,6 +300,8 @@ icpx -fsycl -fsycl-targets=intel_gpu_bmg_g31 -O3 -o bench_llm_vector src/bench_l
 icpx -fsycl -fsycl-targets=intel_gpu_bmg_g31 -O3 -o test_vec_rate_f16 src/test_vec_rate_f16.cpp
 # RTX PRO 5000 (CUDA 13, sm_120a)
 nvcc -O3 -gencode arch=compute_120a,code=sm_120a src/bench_llm_vector.cu -o bench_llm_vector
+# §8 曲线(纯解析,无需 GPU)
+python3 src/plot_vector_share.py   # → report/vector_share_vs_S.png + results/vector_share_vs_S.csv
 ```
 
 注意:B70 f16 速率测试的 DCE 陷阱——guard 值若取 half 不可精确表示的常数
