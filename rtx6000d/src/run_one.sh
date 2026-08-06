@@ -5,7 +5,11 @@ set -u
 TP=$1; EP=$2; LABEL=$3
 GPUS=$(seq -s, 0 $((TP-1)))
 EXTRA=""
-[ "$EP" = "1" ] && EXTRA="--enable-expert-parallel"
+B12X_MOE=1
+if [ "$EP" = "1" ]; then
+  EXTRA="--enable-expert-parallel --moe-backend marlin"
+  B12X_MOE=0
+fi
 
 echo "=== config $LABEL: TP=$TP EP=$EP gpus=$GPUS $(date) ==="
 docker rm -f dsv4-prof >/dev/null 2>&1
@@ -20,7 +24,7 @@ docker run -d --name dsv4-prof --gpus "\"device=$GPUS\"" --network host --ipc=ho
   -e PORT=8100 -e MAXLEN=4096 -e UTIL=0.85 -e TP=$TP -e MAXSEQS=64 -e MNBT=2048 -e CGCAP=64 \
   -e EXTRA_ARGS="$EXTRA" \
   -e VLLM_CACHE_DIR=/cache/jit/vllm \
-  -e USES_B12X=True -e VLLM_USE_B12X_WO_PROJECTION=1 -e VLLM_USE_B12X_FP8_GEMM=1 -e VLLM_USE_B12X_MOE=1 -e VLLM_USE_B12X_MHC=1 \
+  -e USES_B12X=True -e VLLM_USE_B12X_WO_PROJECTION=1 -e VLLM_USE_B12X_FP8_GEMM=1 -e VLLM_USE_B12X_MOE=$B12X_MOE -e VLLM_USE_B12X_MHC=1 \
   -e VLLM_USE_B12X_SPARSE_INDEXER=1 -e VLLM_USE_FLASHINFER_SAMPLER=1 \
   -e B12X_MLA_SM120_UNIFIED=1 -e B12X_DENSE_SPLITK_TURBO=1 -e B12X_W4A16_TC_DECODE=1 \
   -e VLLM_USE_V2_MODEL_RUNNER=1 -e VLLM_WORKSPACE_MAX_MB=512 \

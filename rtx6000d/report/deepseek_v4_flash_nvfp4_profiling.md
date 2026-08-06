@@ -249,11 +249,11 @@ FLOPs 本身不随量化变化(同样的 GEMM 形状),变化的是**单位 FLOPs
 
 ---
 
-## 9. 多卡扩展:TP=2/TP=4 + 通信开销(EP 不可用的实证)
+## 9. 多卡扩展:TP=2/TP=4 + 通信开销(含 EP 绕过实测)
 
 配置:同 2 层模型,`--max-num-seqs 64 --max-num-batched-tokens 2048`,复刻生产通信 env(`VLLM_ENABLE_PCIE_ALLREDUCE=1`、`VLLM_PCIE_ALLREDUCE_BACKEND=b12x`、定制 NCCL `libnccl-local-inference.so.2.30.4`)。拓扑:8×RTX PRO 5000 **全 PCIe(PIX/PXB),无 NVLink**。trace:`results/dsv4_prof_tp2/`、`results/dsv4_prof_tp4/`(每 rank 一份)。Excel 新增 sheet:"TP扩展总览"、"TP通信分析"。
 
-### 9.1 EP(Expert Parallel)结论:不支持
+### 9.1 EP(Expert Parallel):b12x 硬约束 + 备选 backend 两道闸门
 
 `--enable-expert-parallel` 在模型加载阶段直接报错:
 
@@ -263,7 +263,11 @@ since kernel does not support parallel config (ep_size=2, use_ep=True,
 all2all_backend='allgather_reducescatter')
 ```
 
-**b12x NVFP4 MoE kernel 只支持 TP 切分 expert(每 rank 持有 256/TP 个 expert)+ AllReduce 归约,没有 all2all dispatch/combine 的 EP 实现**(`nvfp4.py` oracle 中 EP 需要 modular kernel 的 prepare/finalize 接口,b12x 未实现)。因此多卡只能走 TP,通信形态固定为 AllReduce/AllGather,这是该推理栈当前的硬约束。
+**b12x NVFP4 MoE kernel 只支持 TP 切分 expert(每 rank 持有 256/TP 个 expert)+ AllReduce 归约,没有 all2all dispatch/combine 的 EP 实现**(`b12x_moe.py` 的 `_supports_parallel_config` 硬拒 `use_ep`,且 `supports_expert_map()=False`——是单体融合 kernel 的真实实现缺口,不只是保守检查)。
+
+**绕过 b12x 换备选 backend 还有第二道闸门**:模型 config 带 `swiglu_limit=10.0`,NVFP4 oracle 只允许 FLASHINFER_TRTLLM 和 B12X 应用 SwiGLU clamp,显式指定 cutlass/marlin/flashinfer_cutedsl/emulation 全部 raise;flashinfer_trtllm 过了 clamp 闸门但 kernel 不支持 sm120。另外 cutlass backend 自身也拒绝 EP parallel config。
+
+**本次实测的变通**:patch oracle 跳过显式 backend 的 clamp raise 后,**marlin backend 可以带 `--enable-expert-parallel` 正常加载运行**(见 §9.5)。注意两个 caveat:① marlin NVFP4 MoE 是 **W4A16**(权重 NVFP4 在 kernel 内 dequant 成 bf16 计算,**不走 FP4 tensor core**);② marlin 不应用 SwiGLU clamp,数值与原模型有差异——**本次 EP 数据只用于计时和通信形态分析,不代表正确性可用的部署路径**。
 
 ### 9.2 总览(GPU busy / 通信占比 / wall)
 
@@ -287,19 +291,39 @@ wall 吞吐 decode b64:TP1 4655 → **TP2 5626** → TP4 4947 tok/s;prefill b64:
 
 对比 bs1 decode TP4:小 payload 全部走 b12x `pcie_allreduce`(80 次,均值 **15.6 µs/次**),通信仅 13.2% —— **定制 PCIe-AR 对小 payload 有效,大 payload 落到 NCCL RING 后代价是数量级级的**(PCIe ring 无 NVLink,单次延迟 ~150µs+)。payload 路径由 `VLLM_CPP_AR_1STAGE_NCCL_CUTOFF=56KB` 控制。
 
-### 9.4 关键结论
+### 9.5 EP 实测:TP2+EP(marlin)vs TP2(b12x)
+
+按 §9.1 的方法绕过两道闸门后,TP=2 + `--enable-expert-parallel --moe-backend marlin`(`VLLM_USE_B12X_MOE=0`)完成 bs1/bs64 全量 profiling(trace:`results/dsv4_prof_tp2ep/`,Excel sheet "EP对比"):
+
+| 场景 | bs | 配置 | busy (ms) | wall (ms) | 通信 ms | 通信占 busy | MoE ms | MoE kernel |
+|---|---|---|---|---|---|---|---|---|
+| prefill | 1 | TP2 / TP2+EP | 2.33 / 2.13 | 60 / 48 | 0.41 / 0.16 | 17.7% / 7.6% | 1.01 / 1.02 | b12x / marlin |
+| prefill | 64 | TP2 / TP2+EP | 20.64 / **89.81** | 256 / 240 | 1.56 / **73.63** | 7.6% / **82.0%** | 11.0 / 7.4 | b12x / marlin |
+| decode | 1 | TP2 / TP2+EP | 20.17 / **55.98** | 80 / 77 | 4.87 / **40.01** | 24.2% / **71.5%** | 2.10 / 1.64 | b12x / marlin |
+| decode | 64 | TP2 / TP2+EP | 87.61 / **143.28** | 182 / 175 | 7.28 / **65.19** | 8.3% / **45.5%** | 45.4 / 42.4 | b12x / marlin |
+
+关键观察:
+
+1. **EP 的通信不是 all2all,而是更贵的形态**:trace 里**没有任何 AllToAll/ReduceScatter kernel**——dispatch 走 `ncclDevKernel_AllGather`(decode b64:26 次,6.61 ms),combine 退化为**全量 hidden 的 AllReduce**。decode bs1 时 `pcie_allreduce` 单次均值从 TP2 的 15.6 µs 涨到 **494 µs**(80 次共 39.5 ms):TP 下每层 AR 的 payload 随 expert 切分后归约量不变,而 EP 下每 rank 对全部 token 的部分 expert 输出求和,合并的是完整 [tokens, hidden] 张量,**AR 次数没少、单次 payload 更大**。
+2. **大 batch prefill 通信直接失控**:prefill b64 的 NCCL AllReduce 单次均值 **4.59 ms**(15 次共 68.9 ms,82% busy)——1024 token 的全量 hidden AR 走 PCIe RING,而 TP2 同场景通信仅 1.56 ms。
+3. **MoE 计算本身两者相当**(decode b64:marlin 42.4 ms vs b12x 45.4 ms)——marlin 把 NVFP4 dequant 成 bf16 算,2 层小模型下没输;但 b12x 路径还有 FP4 计算 + clamp 的正确性优势,且 marlin 在 43 层全模型上的 dequant 开销未验证。
+4. **wall 时间 EP 略胜纯属干扰项**:decode b64 wall 175 vs 182 ms,但 busy 143 vs 88 ms——EP 的通信 kernel 与计算 overlap 较好掩盖了部分代价,且 2 层模型的层间同步次数太少。busy(纯 GPU 资源消耗)才是可比指标:**EP 每 token 消耗的 GPU 时间是 TP2 的 1.6~4.3 倍**,43 层下通信次数 ×21,EP 在 PCIe 机器上没有胜算。
+
+**结论:EP 在这套栈 + PCIe 拓扑上不可用是双重的**——b12x kernel 没实现(§9.1),绕过后备选路径的通信形态(allgather+全量 AR)和 kernel 能力(W4A16 无 FP4 加速)都不成立。多卡部署维持 §9.4 结论:**TP=2 封顶**。
+
+### 9.6 关键结论
 
 1. **PCIe-only 机器上 TP=2 是最优点**:decode b64 拿到 1.52× busy 加速(wall 220→182 ms,+21% 吞吐),通信代价仅 8.3%;TP=4 通信爆炸到 44%,wall 反而比 TP2 差(207 vs 182 ms)。MoE 计算本身随 TP 近线性下降(84→45→27 ms),**瓶颈从 TP≥2 起就完全转移到通信**。
 2. **bs=1 时多卡在 wall 上是负收益**:TP4 把 decode busy 压到 2.41×,但 wall 73→82 ms——小 batch 下每步多次 AR 的同步延迟 + CPU 协调开销吃掉全部收益。**bs=1 就该单卡**(与 §8 的 lm_head 结论一致:小 batch 的税在固定开销,不在算力)。
-3. **EP 不可用把 MoE 通信锁死在 AllReduce 形态**:TP 切 expert 后每层 2 次 AR;若未来 b12x 支持 EP(all2all dispatch),bs64 大 batch 下可用 all2all 换掉低效的全量 AR——这是该推理栈多卡扩展性的首要缺口。
+3. **EP 通信形态实测(§9.5)远不如 TP**:即便绕过 backend 限制用 marlin 起 EP,allgather dispatch + 全量 AR combine 的通信占 busy 45~82%(vs TP2 的 8.3%),且 EP 可用的唯一 NVFP4 backend(marlin)不做 FP4 计算。**EP 要把账算过来,前提是:有真 all2all dispatch/combine(而非 allgather+AR 代替)+ EP 路径上有 FP4 tensor core kernel + 更大 EP 组摊薄通信**——三者当前栈都不具备。
 4. 无 NVLink 是硬约束:TP=4 的 NCCL RING 单次 AR 154 µs(bs64),同样 payload 在 NVLink 机器上预期 <20 µs。**PCIe 机器部署该模型的建议上限就是 TP=2**,与生产配置(2 卡 GLM + 6 卡 DSV4 中 DSV4 用 TP=2 多实例)一致。
 
 ---
 
 ## 附录
 
-- trace 文件:`results/dsv4_prof/`(TP1 b1)、`results/dsv4_prof_b64/`(TP1 b64)、`results/dsv4_prof_tp2/`(TP=2)、`results/dsv4_prof_tp4/`(TP=4,均含各 rank)
-- 对比 Excel:`results/DeepSeekV4_NVFP4_profiling_comparison.xlsx`(生成脚本 `src/gen_excel.py` + `src/gen_excel_tp.py`)
+- trace 文件:`results/dsv4_prof/`(TP1 b1)、`results/dsv4_prof_b64/`(TP1 b64)、`results/dsv4_prof_tp2/`(TP=2)、`results/dsv4_prof_tp4/`(TP=4,均含各 rank)、`results/dsv4_prof_tp2ep/`(TP=2+EP,marlin backend)
+- 对比 Excel:`results/DeepSeekV4_NVFP4_profiling_comparison.xlsx`(生成脚本 `src/gen_excel.py` + `src/gen_excel_tp.py` + `src/gen_excel_ep.py`)
 - 字节 breakdown:`src/byte_breakdown.py`(输出见 §1.2)
 - 裁剪:`src/trim_dsv4.py`;服务脚本:`src/inner_prof.sh`;多卡驱动:`src/run_one.sh`;采集:`src/prof_client.py`(b1)/ `src/prof_client_b64.py`(b64);解析:`src/parse_trace2.py`
 - 原始模型:172.16.120.54 `/home/sdf/disk/DeepSeek-V4-Flash-0731-NVFP4`;裁剪模型:10.239.11.161 `/root/models/DeepSeek-V4-Flash-2L-NVFP4`
