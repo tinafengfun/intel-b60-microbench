@@ -249,11 +249,58 @@ FLOPs 本身不随量化变化(同样的 GEMM 形状),变化的是**单位 FLOPs
 
 ---
 
+## 9. 多卡扩展:TP=2/TP=4 + 通信开销(EP 不可用的实证)
+
+配置:同 2 层模型,`--max-num-seqs 64 --max-num-batched-tokens 2048`,复刻生产通信 env(`VLLM_ENABLE_PCIE_ALLREDUCE=1`、`VLLM_PCIE_ALLREDUCE_BACKEND=b12x`、定制 NCCL `libnccl-local-inference.so.2.30.4`)。拓扑:8×RTX PRO 5000 **全 PCIe(PIX/PXB),无 NVLink**。trace:`results/dsv4_prof_tp2/`、`results/dsv4_prof_tp4/`(每 rank 一份)。Excel 新增 sheet:"TP扩展总览"、"TP通信分析"。
+
+### 9.1 EP(Expert Parallel)结论:不支持
+
+`--enable-expert-parallel` 在模型加载阶段直接报错:
+
+```
+ValueError: NvFp4 MoE backend 'B12X' does not support the deployment configuration
+since kernel does not support parallel config (ep_size=2, use_ep=True,
+all2all_backend='allgather_reducescatter')
+```
+
+**b12x NVFP4 MoE kernel 只支持 TP 切分 expert(每 rank 持有 256/TP 个 expert)+ AllReduce 归约,没有 all2all dispatch/combine 的 EP 实现**(`nvfp4.py` oracle 中 EP 需要 modular kernel 的 prepare/finalize 接口,b12x 未实现)。因此多卡只能走 TP,通信形态固定为 AllReduce/AllGather,这是该推理栈当前的硬约束。
+
+### 9.2 总览(GPU busy / 通信占比 / wall)
+
+| 场景 | bs | TP | busy (ms) | vs TP1 | 通信 ms | 通信占 busy | MoE NVFP4 ms | wall (ms) |
+|---|---|---|---|---|---|---|---|---|
+| prefill | 1 | 1/2/4 | 3.51 / 2.33 / 1.80 | 1.0 / 1.51 / 1.95× | 0 / 0.41 / 0.65 | 0 / 17.7% / 36.2% | 1.97 / 1.01 / 0.54 | 55 / 60 / 59 |
+| prefill | 64 | 1/2/4 | 32.28 / 20.64 / **27.31** | 1.0 / **1.56** / 1.18× | 0 / 1.56 / **14.78** | 0 / 7.6% / **54.1%** | 20.6 / 11.0 / 6.1 | 360 / **256** / 255 |
+| decode | 1 | 1/2/4 | 27.30 / 20.17 / 11.33 | 1.0 / 1.35 / 2.41× | 0 / 4.87 / 1.49 | 0 / 24.2% / 13.2% | 3.67 / 2.10 / 1.11 | **73** / 80 / 82 |
+| decode | 64 | 1/2/4 | 133.34 / **87.61** / 99.43 | 1.0 / **1.52** / 1.34× | 0 / 7.28 / **43.96** | 0 / 8.3% / **44.2%** | 84.2 / 45.4 / 26.7 | 220 / **182** / 207 |
+
+wall 吞吐 decode b64:TP1 4655 → **TP2 5626** → TP4 4947 tok/s;prefill b64:2844 → **4000** → 4015 tok/s。
+
+### 9.3 通信开销拆解(decode b64,TP4 为例)
+
+| 通信 kernel | 时间 | 调用 | 单次均值 | 用途 |
+|---|---|---|---|---|
+| NCCL AllReduce RING LL(bf16) | 22.35 ms | 145 | **154 µs/次** | 大 payload(≥56KB)层间归约 |
+| b12x `pcie_allreduce_kernel` | 14.32 ms | 15 | 955 µs/次 | 生产定制 PCIe AR |
+| NCCL AllGather RING LL | 7.29 ms | 32 | 228 µs/次 | logits/权重 gather |
+| **合计** | **43.96 ms** | | **44.2% of busy** | |
+
+对比 bs1 decode TP4:小 payload 全部走 b12x `pcie_allreduce`(80 次,均值 **15.6 µs/次**),通信仅 13.2% —— **定制 PCIe-AR 对小 payload 有效,大 payload 落到 NCCL RING 后代价是数量级级的**(PCIe ring 无 NVLink,单次延迟 ~150µs+)。payload 路径由 `VLLM_CPP_AR_1STAGE_NCCL_CUTOFF=56KB` 控制。
+
+### 9.4 关键结论
+
+1. **PCIe-only 机器上 TP=2 是最优点**:decode b64 拿到 1.52× busy 加速(wall 220→182 ms,+21% 吞吐),通信代价仅 8.3%;TP=4 通信爆炸到 44%,wall 反而比 TP2 差(207 vs 182 ms)。MoE 计算本身随 TP 近线性下降(84→45→27 ms),**瓶颈从 TP≥2 起就完全转移到通信**。
+2. **bs=1 时多卡在 wall 上是负收益**:TP4 把 decode busy 压到 2.41×,但 wall 73→82 ms——小 batch 下每步多次 AR 的同步延迟 + CPU 协调开销吃掉全部收益。**bs=1 就该单卡**(与 §8 的 lm_head 结论一致:小 batch 的税在固定开销,不在算力)。
+3. **EP 不可用把 MoE 通信锁死在 AllReduce 形态**:TP 切 expert 后每层 2 次 AR;若未来 b12x 支持 EP(all2all dispatch),bs64 大 batch 下可用 all2all 换掉低效的全量 AR——这是该推理栈多卡扩展性的首要缺口。
+4. 无 NVLink 是硬约束:TP=4 的 NCCL RING 单次 AR 154 µs(bs64),同样 payload 在 NVLink 机器上预期 <20 µs。**PCIe 机器部署该模型的建议上限就是 TP=2**,与生产配置(2 卡 GLM + 6 卡 DSV4 中 DSV4 用 TP=2 多实例)一致。
+
+---
+
 ## 附录
 
-- trace 文件:`results/dsv4_prof/*.pt.trace.json.gz`(batch=1,prefill/decode 各一份 rank0 + async_llm 前端);`results/dsv4_prof_b64/`(batch=64)
-- 对比 Excel:`results/DeepSeekV4_NVFP4_profiling_comparison.xlsx`(生成脚本 `src/gen_excel.py`)
+- trace 文件:`results/dsv4_prof/`(TP1 b1)、`results/dsv4_prof_b64/`(TP1 b64)、`results/dsv4_prof_tp2/`(TP=2)、`results/dsv4_prof_tp4/`(TP=4,均含各 rank)
+- 对比 Excel:`results/DeepSeekV4_NVFP4_profiling_comparison.xlsx`(生成脚本 `src/gen_excel.py` + `src/gen_excel_tp.py`)
 - 字节 breakdown:`src/byte_breakdown.py`(输出见 §1.2)
-- 裁剪:`src/trim_dsv4.py`;服务脚本:`src/inner_prof.sh`;采集:`src/prof_client.py`(b1)/ `src/prof_client_b64.py`(b64);解析:`src/parse_trace2.py`
+- 裁剪:`src/trim_dsv4.py`;服务脚本:`src/inner_prof.sh`;多卡驱动:`src/run_one.sh`;采集:`src/prof_client.py`(b1)/ `src/prof_client_b64.py`(b64);解析:`src/parse_trace2.py`
 - 原始模型:172.16.120.54 `/home/sdf/disk/DeepSeek-V4-Flash-0731-NVFP4`;裁剪模型:10.239.11.161 `/root/models/DeepSeek-V4-Flash-2L-NVFP4`
 - 环境约束:120.54 八卡被 GLM-5.2 + DSV4 生产服务占满(各卡剩 ~1 GB),故全部分析在 10.239.11.161 GPU0 完成,未影响任何现有服务

@@ -1,0 +1,107 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                vllm:v2/target/decode/full_graph_replay         0.00%       0.000us         0.00%       0.000us       0.000us     201.849ms       127.00%     201.849ms       2.170ms            93  
+ncclDevKernel_AllReduce_Sum_bf16_RING_LL(ncclDevKern...         0.00%       0.000us         0.00%       0.000us       0.000us      81.321ms        51.17%      81.321ms     560.837us           145  
+kernel_cutlass_kernel_b12xmoefusedsiluMoEDynamicKern...         0.00%       0.000us         0.00%       0.000us       0.000us      26.540ms        16.70%      26.540ms     457.590us            58  
+                           vllm:v2/target/decode/logits         0.00%       0.000us         0.00%       0.000us       0.000us      13.456ms         8.47%      13.456ms     420.498us            32  
+void pcie_allreduce::pcie_allreduce_kernel<__nv_bflo...         0.00%       0.000us         0.00%       0.000us       0.000us      12.929ms         8.13%      12.929ms     861.937us            15  
+                           vllm:v2/target/decode/sample         0.00%       0.000us         0.00%       0.000us       0.000us       7.796ms         4.90%       7.796ms     243.614us            32  
+                                     record_param_comms         0.30%       2.891ms         0.38%       3.633ms     113.529us       7.405ms         4.66%       7.405ms     231.414us            32  
+ncclDevKernel_AllGather_RING_LL(ncclDevKernelArgsSto...         0.00%       0.000us         0.00%       0.000us       0.000us       7.405ms         4.66%       7.405ms     231.414us            32  
+                                  nccl:_all_gather_base         0.00%       0.000us         0.00%       0.000us       0.000us       7.405ms         4.66%       7.405ms     231.414us            32  
+                                               aten::mm         0.27%       2.569ms         0.32%       3.072ms      96.010us       7.252ms         4.56%       7.481ms     233.785us            32  
+                                  _gumbel_sample_kernel         0.00%       0.000us         0.00%       0.000us       0.000us       6.865ms         4.32%       6.865ms     214.529us            32  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us       4.522ms         2.84%       4.522ms     226.081us            20  
+kernel_cutlass_kernel_b12xintegrationresidual_kernel...         0.00%       0.000us         0.00%       0.000us       0.000us       2.090ms         1.31%       2.090ms      16.324us           128  
+                            vllm:v2/target/update_batch         0.00%       0.000us         0.00%       0.000us       0.000us       2.006ms         1.26%       2.006ms     125.366us            16  
+                          vllm:v2/target/prepare_inputs         0.00%       0.000us         0.00%       0.000us       0.000us       1.517ms         0.95%       1.517ms      47.400us            32  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us       1.344ms         0.85%       1.344ms      11.582us           116  
+kernel_cutlass_kernel_pertok_b12xattentionmlakernelU...         0.00%       0.000us         0.00%       0.000us       0.000us       1.220ms         0.77%       1.220ms      19.065us            64  
+                                            aten::copy_         0.22%       2.086ms         1.40%      13.428ms      47.116us       1.025ms         0.64%       1.025ms       3.596us           285  
+void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us     933.872us         0.59%     933.872us      77.823us            12  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     726.770us         0.46%     726.770us     242.257us             3  
+kernel_cutlass_kernel_b12xintegrationresidual_kernel...         0.00%       0.000us         0.00%       0.000us       0.000us     720.147us         0.45%     720.147us       5.626us           128  
+                        _quantize_dense_tk_to_tk_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     688.501us         0.43%     688.501us       2.689us           256  
+std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us     676.821us         0.43%     676.821us      75.202us             9  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us     666.136us         0.42%     666.136us      11.485us            58  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us     647.061us         0.41%     647.061us      11.156us            58  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     608.562us         0.38%     608.562us       0.792us           768  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us     583.254us         0.37%     583.254us      10.056us            58  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us     548.730us         0.35%     548.730us       9.461us            58  
+void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     541.531us         0.34%     541.531us       5.641us            96  
+             _quantize_attention_inv_rope_to_tdg_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     501.048us         0.32%     501.048us       7.829us            64  
+kernel_cutlass_kernel_b12xintegrationresidual_kernel...         0.00%       0.000us         0.00%       0.000us       0.000us     484.984us         0.31%     484.984us      15.156us            32  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     454.295us         0.29%     454.295us     227.148us             2  
+                                          memcpy32_post         0.00%       0.000us         0.00%       0.000us       0.000us     433.611us         0.27%     433.611us       1.052us           412  
+                                    _apply_write_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     415.928us         0.26%     415.928us       6.499us            64  
+              vllm:v2/target/decode/prepare_attn_tables         0.00%       0.000us         0.00%       0.000us       0.000us     408.474us         0.26%     408.474us      12.765us            32  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     405.720us         0.26%     405.720us       0.882us           460  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     398.778us         0.25%     398.778us       6.537us            61  
+              vllm:v2/target/decode/build_attn_metadata         0.00%       0.000us         0.00%       0.000us       0.000us     313.687us         0.20%     313.687us       9.803us            32  
+void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_...         0.00%       0.000us         0.00%       0.000us       0.000us     277.185us         0.17%     277.185us       5.544us            50  
+void vllm::moe::topkGatingSoftplusSqrt<8, 256, 4, 16...         0.00%       0.000us         0.00%       0.000us       0.000us     275.997us         0.17%     275.997us       4.312us            64  
+                           hc_head_fuse_tilelang_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     244.154us         0.15%     244.154us       7.630us            32  
+                                  Lazy Function Loading         0.01%     113.666us         0.01%     113.666us     113.666us     229.468us         0.14%     229.468us     229.468us             1  
+kernel_cutlass_kernel_b12xmoefusedsiluMoEMicroKernel...         0.00%       0.000us         0.00%       0.000us       0.000us     217.053us         0.14%     217.053us      36.176us             6  
+                            _gather_block_tables_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     208.539us         0.13%     208.539us       6.517us            32  
+               _combine_sampled_and_draft_tokens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     202.624us         0.13%     202.624us       6.332us            32  
+                                            aten::index         0.21%       1.963ms         0.35%       3.347ms      34.869us     194.758us         0.12%     194.758us       2.029us            96  
+                   _get_num_sampled_and_rejected_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     192.090us         0.12%     192.090us       6.003us            32  
+kernel_cutlass_kernel_b12xattentionmlamergeSparseMLA...         0.00%       0.000us         0.00%       0.000us       0.000us     173.979us         0.11%     173.979us       2.718us            64  
+void vllm::deepseek_v4_fused_ops::fusedDeepseekV4QNo...         0.00%       0.000us         0.00%       0.000us       0.000us     160.604us         0.10%     160.604us       2.509us            64  
+                 _quantize_group_major_trg_to_tk_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     132.958us         0.08%     132.958us       2.077us            64  
+                         _prepare_prefill_inputs_kernel         0.00%       0.000us         0.00%       0.000us       0.000us     129.085us         0.08%     129.085us       8.068us            16  
+void cublasLt::splitKreduce_kernel<32, 16, int, __nv...         0.00%       0.000us         0.00%       0.000us       0.000us     119.486us         0.08%     119.486us       2.060us            58  
+void vllm::act_and_mul_kernel<c10::BFloat16, __nv_bf...         0.00%       0.000us         0.00%       0.000us       0.000us     113.277us         0.07%     113.277us       1.770us            64  
+                     vllm:v2/target/decode/async_output         0.00%       0.000us         0.00%       0.000us       0.000us     112.894us         0.07%     112.894us       3.528us            32  
+                         Memcpy HtoD (Pinned -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us     112.734us         0.07%     112.734us       1.761us            64  
+                       Memcpy HtoD (Pageable -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us     110.622us         0.07%     110.622us       1.728us            64  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us     107.391us         0.07%     107.391us       8.949us            12  
+                                    _post_update_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      96.058us         0.06%      96.058us       3.002us            32  
+              vllm:v2/target/decode/postprocess_sampled         0.00%       0.000us         0.00%       0.000us       0.000us      96.058us         0.06%      96.058us       3.002us            32  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us      94.336us         0.06%      94.336us      15.723us             6  
+                             _fused_q_kv_rmsnorm_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      91.899us         0.06%      91.899us       1.436us            64  
+                                           aten::argmax         0.06%     533.364us         0.08%     764.949us      23.905us      89.983us         0.06%      89.983us       2.812us            32  
+void at::native::reduce_kernel<512, 1, at::native::R...         0.00%       0.000us         0.00%       0.000us       0.000us      89.983us         0.06%      89.983us       2.812us            32  
+                         Memcpy DtoH (Device -> Pinned)         0.00%       0.000us         0.00%       0.000us       0.000us      81.888us         0.05%      81.888us       1.279us            64  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      79.229us         0.05%      79.229us       1.238us            64  
+void at::native::vectorized_gather_kernel<16, long>(...         0.00%       0.000us         0.00%       0.000us       0.000us      74.754us         0.05%      74.754us       1.384us            54  
+void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      72.611us         0.05%      72.611us       2.269us            32  
+void vllm::rms_norm_kernel<c10::BFloat16, 8, 2>(c10:...         0.00%       0.000us         0.00%       0.000us       0.000us      70.816us         0.04%      70.816us       2.213us            32  
+void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      68.353us         0.04%      68.353us       2.136us            32  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      67.295us         0.04%      67.295us       2.103us            32  
+                          _compute_slot_mappings_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      65.725us         0.04%      65.725us       2.054us            32  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us      64.543us         0.04%      64.543us      10.757us             6  
+                   _compute_swa_indices_and_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      62.429us         0.04%      62.429us       1.951us            32  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us      59.581us         0.04%      59.581us       9.930us             6  
+kernel_cutlass_kernel_b12xgemmdenseDenseGemmKernel_o...         0.00%       0.000us         0.00%       0.000us       0.000us      57.439us         0.04%      57.439us       9.573us             6  
+                                            aten::fill_         0.06%     536.944us         0.10%     949.422us       7.417us      52.321us         0.03%      52.321us       0.409us           128  
+                                           aten::gather         0.05%     486.678us         0.08%     758.021us      23.688us      50.431us         0.03%      50.431us       1.576us            32  
+void at::native::_scatter_gather_elementwise_kernel<...         0.00%       0.000us         0.00%       0.000us       0.000us      50.431us         0.03%      50.431us       1.576us            32  
+                           _prepare_pos_seq_lens_kernel         0.00%       0.000us         0.00%       0.000us       0.000us      36.671us         0.02%      36.671us       1.146us            32  
+                                              memcpy128         0.00%       0.000us         0.00%       0.000us       0.000us      34.748us         0.02%      34.748us       1.287us            27  
+                                               aten::ge         0.09%     829.324us         0.13%       1.219ms      38.092us      34.270us         0.02%      34.270us       1.071us            32  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      34.270us         0.02%      34.270us       1.071us            32  
+                         Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us      31.393us         0.02%      31.393us       0.981us            32  
+void at::native::(anonymous namespace)::indexSelectS...         0.00%       0.000us         0.00%       0.000us       0.000us      29.151us         0.02%      29.151us       4.164us             7  
+                                           aten::arange         0.06%     548.148us         0.23%       2.187ms      34.176us      24.797us         0.02%      49.594us       0.775us            64  
+void (anonymous namespace)::elementwise_kernel_with_...         0.00%       0.000us         0.00%       0.000us       0.000us      24.797us         0.02%      24.797us       0.775us            32  
+triton_poi_fused_add_bitwise_and_bitwise_not_bitwise...         0.00%       0.000us         0.00%       0.000us       0.000us      23.807us         0.01%      23.807us       0.821us            29  
+void at::native::index_elementwise_kernel<128, 4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      15.008us         0.01%      15.008us       5.003us             3  
+                                        Memset (Device)         0.00%       0.000us         0.00%       0.000us       0.000us       3.584us         0.00%       3.584us       1.792us             2  
+triton_poi_fused_add_bitwise_and_bitwise_or_ge_lt_mu...         0.00%       0.000us         0.00%       0.000us       0.000us       3.520us         0.00%       3.520us       1.173us             3  
+triton_poi_fused_bitwise_and_bitwise_not_bitwise_or_...         0.00%       0.000us         0.00%       0.000us       0.000us       3.104us         0.00%       3.104us       1.035us             3  
+                         threading.py(1030): _bootstrap         0.00%       2.330us       133.33%        1.275s     318.666ms       0.000us         0.00%       0.000us       0.000us             4  
+                   threading.py(1073): _bootstrap_inner         0.00%       7.708us       133.33%        1.275s     318.665ms       0.000us         0.00%       0.000us       0.000us             4  
+                              tqdm/_monitor.py(69): run         0.00%       2.407us        66.67%     637.331ms     318.666ms       0.000us         0.00%       0.000us       0.000us             2  
+                                threading.py(655): wait         0.00%       4.891us        66.67%     637.329ms     318.664ms       0.000us         0.00%       0.000us       0.000us             2  
+                                threading.py(359): wait        33.33%     318.652ms        66.67%     637.324ms     318.662ms       0.000us         0.00%       0.000us       0.000us             2  
+                                threading.py(1010): run         0.00%       5.091us        66.67%     637.322ms     318.661ms       0.000us         0.00%       0.000us       0.000us             2  
+vllm/v1/executor/multiproc_executor.py(788): death_p...         0.00%       2.949us        33.33%     318.666ms     318.666ms       0.000us         0.00%       0.000us       0.000us             1  
+               multiprocessing/connection.py(250): recv         0.00%       2.017us        33.33%     318.663ms     318.663ms       0.000us         0.00%       0.000us       0.000us             1  
+        multiprocessing/connection.py(430): _recv_bytes         0.00%       1.322us        33.33%     318.661ms     318.661ms       0.000us         0.00%       0.000us       0.000us             1  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 955.996ms
+Self CUDA time total: 158.937ms
+
