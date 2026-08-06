@@ -204,10 +204,56 @@ FLOPs 本身不随量化变化(同样的 GEMM 形状),变化的是**单位 FLOPs
 
 ---
 
+## 8. Batch=64 对比测试(TP=1,同模型同卡)
+
+配置变更:`--max-num-seqs 64 --max-num-batched-tokens 2048 --max-cudagraph-capture-size 64`;客户端 64 并发请求(prefill:64×16 token 共 1024 token;decode:64×1 token 各生成 16 token 共 1024 token)。完整数据见 `results/DeepSeekV4_NVFP4_profiling_comparison.xlsx`(4 个 sheet:对比总览 / prefill breakdown / decode breakdown / NVFP4 分析),trace 在 `results/dsv4_prof_b64/`。
+
+### 8.1 总览对比
+
+| 场景 | batch | GPU busy | wall | GPU 占用率 | 每 token busy | 吞吐 (wall) | NVFP4 占比 |
+|---|---|---|---|---|---|---|---|
+| Prefill | 1 | 3.51 ms | 55 ms | 6% | 219.3 µs | 291 tok/s | 56.2% |
+| Prefill | **64** | 32.28 ms | 360 ms | 9% | **31.5 µs** | 2844 tok/s | **63.8%** |
+| Decode | 1 | 27.30 ms(16 步) | 73 ms | 37% | 1706.5 µs | 219 tok/s | 13.4% |
+| Decode | **64** | 133.34 ms(16 步) | 220 ms | **61%** | **130.2 µs** | **4655 tok/s** | **63.1%** |
+
+- Decode 每步 GPU busy 从 1.71 ms(b1)涨到 8.33 ms(b64),**4.9× 的时间做了 64× 的工作**,单 token 成本 1706→130 µs(13.1×),wall 吞吐 219→4655 tok/s(21×)。
+- Prefill 单 token 成本 219→31.5 µs(7×)。
+
+### 8.2 Decode 模块对比(每 token GPU 时间,b1 → b64,效率提升)
+
+| 模块 | b1 每 token | b64 每 token | 效率提升 | b1 占比 → b64 占比 |
+|---|---|---|---|---|
+| **MoE NVFP4** | 229.1 µs | 82.2 µs | 2.8× | 13.4% → **63.1%** |
+| **lm_head (bf16)** | 885.8 µs | 20.0 µs | **44×** | 51.9% → 15.4% |
+| attn 投影+shared (FP8) | 363.4 µs | 7.8 µs | **47×** | 21.3% → 6.0% |
+| MLA attention | 33.0 µs | 3.4 µs | 9.7× | 1.9% → 2.6% |
+| MHC | 37.8 µs | 3.1 µs | 12× | 2.2% → 2.4% |
+| 量化/逆RoPE | 20.2 µs | 3.0 µs | 6.7× | 1.2% → 2.3% |
+| router/gate | 24.8 µs | 2.3 µs | 10.8× | 1.5% → 1.8% |
+| sampler | 9.0 µs | 4.7 µs | 1.9× | 0.5% → 3.6% |
+
+### 8.3 关键发现
+
+1. **batch=64 时 decode 的成本结构完全翻转**:b1 时 lm_head(52%)和 FP8 投影(21%)主导;b64 时它们的权重读被 64 个序列摊薄(效率提升 44×/47×),**NVFP4 MoE 成为绝对主导(63%)** —— b1 的结论"lm_head 是第一税"是小 batch 假象,生产 batch 下 MoE 才是主战场。
+2. **MoE 在 b64 decode 已打满显存带宽**:64 序列 × 6 expert 几乎激活全部 256 个 expert,每层每步读 ~3.4 GB FP4 权重,实测 2.63 ms/层步 ≈ **1.29 TB/s(GDDR7 峰值附近)**;b1 时只读 6 个 expert(57 MB),有效带宽仅 0.5 TB/s(延迟/占用率限制)。**这定量证明了 NVFP4 的 decode 收益机制:batch 越大,MoE 吞吐越纯粹由"激活 expert 权重字节数 ÷ 显存带宽"决定,FP4 相对 FP8/BF16 的字节缩减直接等比例放大吞吐。**
+3. **MoE kernel 随 batch 切换实现**:decode b1 用 `MoEMicroKernelSilu`(微批),b64 自动切到 `MoEDynamicKernelSilu`(与 prefill 相同的动态分组实现)。
+4. Prefill b64(1024 token)MoE 每层 10.3 ms:读全部 expert(3.4 GB → 0.33 TB/s)+ ~360 GFLOP(→17.5 TFLOPS),带宽和算力都没打满,瓶颈在分组 GEMM 的调度/expert 负载不均 —— 中等 batch prefill 是 NVFP4 MoE kernel 效率的洼地。
+5. sampler(`_gumbel_sample`,129280 vocab × 64 seq)和 MHC 超连接在 b64 占比上升到 3.6%/2.4%,是 batch 放大后新冒头的次要开销。
+6. CPU 侧 overhead 依旧:prefill b64 GPU 占用率仅 9%(64 请求的 tokenize/调度/eager prefill launch);decode b64 提升到 61%,仍有 ~40% 的 span 空隙。
+
+### 8.4 对 §7 结论的修正与强化
+
+- §7.2 的"lm_head 是最值得优化的单点"**仅在小 batch(≤8)成立**;batch≥16 后 FP8/NVFP4 化 lm_head 的优先级让位于 MoE kernel 效率(尤其中等 batch prefill 的 0.33 TB/s 洼地)。
+- §7.5"带宽是唯一贯穿始终的瓶颈"在 b64 得到强化:b64 decode MoE 实测 1.29 TB/s 贴满 GDDR7 峰值,NVFP4 作为"带宽放大器"的价值与 batch 成正比。
+
+---
+
 ## 附录
 
-- trace 文件:`results/dsv4_prof/*.pt.trace.json.gz`(prefill/decode 各一份 rank0 + async_llm 前端)
+- trace 文件:`results/dsv4_prof/*.pt.trace.json.gz`(batch=1,prefill/decode 各一份 rank0 + async_llm 前端);`results/dsv4_prof_b64/`(batch=64)
+- 对比 Excel:`results/DeepSeekV4_NVFP4_profiling_comparison.xlsx`(生成脚本 `src/gen_excel.py`)
 - 字节 breakdown:`src/byte_breakdown.py`(输出见 §1.2)
-- 裁剪:`src/trim_dsv4.py`;服务脚本:`src/inner_prof.sh`;采集:`src/prof_client.py`;解析:`src/parse_trace2.py`
+- 裁剪:`src/trim_dsv4.py`;服务脚本:`src/inner_prof.sh`;采集:`src/prof_client.py`(b1)/ `src/prof_client_b64.py`(b64);解析:`src/parse_trace2.py`
 - 原始模型:172.16.120.54 `/home/sdf/disk/DeepSeek-V4-Flash-0731-NVFP4`;裁剪模型:10.239.11.161 `/root/models/DeepSeek-V4-Flash-2L-NVFP4`
 - 环境约束:120.54 八卡被 GLM-5.2 + DSV4 生产服务占满(各卡剩 ~1 GB),故全部分析在 10.239.11.161 GPU0 完成,未影响任何现有服务
